@@ -84,6 +84,61 @@ impl eframe::App for TemplateApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("🏡 My Digital Garden");
         });
+
+        egui::Window::new("About Me")
+            .open(&mut true)
+            .show(ctx, |ui| {
+                ui.label("Life Skills");
+                egui::Grid::new("life_skills")
+                    .num_columns(2)
+                    .spacing([40.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.add(doc_link_label("Drawing & Painting", "DrawingAndPainting"));
+                        let progress = 300.0 / 360.0;
+                        let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+                        ui.add(progress_bar);
+                        ui.end_row();
+                        ui.add(doc_link_label("Cooking", "Cooking"));
+                        let progress = 290.0 / 360.0;
+                        let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+                        ui.add(progress_bar);
+                        ui.end_row();
+                        ui.add(doc_link_label("Model Building", "ModelBuilding"));
+                        let progress = 200.0 / 360.0;
+                        let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+                        ui.add(progress_bar);
+                        ui.end_row();
+                    });
+                ui.separator();
+                ui.label("Work Skills");
+                egui::Grid::new("work_skills")
+                    .num_columns(2)
+                    .spacing([100.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.add(doc_link_label("Python", "https://google.com"));
+                        let progress = 234.0 / 360.0;
+                        let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+                        ui.add(progress_bar);
+                        ui.end_row();
+                        ui.add(doc_link_label("Javascript", "js_programming"));
+                        let progress = 126.0 / 360.0;
+                        let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+                        ui.add(progress_bar);
+                        ui.end_row();
+                        ui.add(doc_link_label("Rust", "rust_programming"));
+                        let progress = 60.0 / 360.0;
+                        let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+                        ui.add(progress_bar);
+                        ui.end_row();
+                        ui.add(doc_link_label("Elixir", "elixir_programming"));
+                        let progress = 85.0 / 360.0;
+                        let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+                        ui.add(progress_bar);
+                        ui.end_row();
+                    });
+            });
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -158,4 +213,15 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
             _frame.close();
         }
     });
+}
+
+fn doc_link_label<'a>(title: &'a str, hyperlink: &'a str) -> impl egui::Widget + 'a {
+    let label = format!("{}:", title);
+    move |ui: &mut egui::Ui| {
+        ui.hyperlink_to(label, hyperlink).on_hover_ui(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Click me!");
+            });
+        })
+    }
 }
