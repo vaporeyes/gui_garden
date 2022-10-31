@@ -1,6 +1,8 @@
 #![warn(clippy::all, rust_2018_idioms)]
 
+mod about;
 mod app;
+mod apps;
 pub use app::TemplateApp;
 
 pub trait View {
