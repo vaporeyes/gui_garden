@@ -1,12 +1,12 @@
-use egui::{Ui, RichText, Color32};
+use egui::{Color32, RichText, Ui};
 
 const ORANGE: Color32 = Color32::from_rgb(244, 166, 52);
 const GRAY: Color32 = Color32::from_rgb(95, 95, 104);
 const DKGRAY: Color32 = Color32::from_rgb(63, 63, 70);
-const BLACK: Color32 = Color32::from_rgb(0, 0, 0);
-const DKDKGRAY: Color32 = Color32::from_rgb(27, 27, 27);
+// const BLACK: Color32 = Color32::from_rgb(0, 0, 0);
+// const DKDKGRAY: Color32 = Color32::from_rgb(27, 27, 27);
 const WHITE: Color32 = Color32::from_rgb(255, 255, 255);
-const DKOLOVE: Color32 = Color32::from_rgb(64, 61, 33);
+// const DKOLIVE: Color32 = Color32::from_rgb(64, 61, 33);
 
 #[derive(PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
@@ -14,7 +14,7 @@ const DKOLOVE: Color32 = Color32::from_rgb(64, 61, 33);
 pub struct Calculator {
     calc_value: String,
     label_calc_cur_value: String,
-    calc_plus_clicked: bool,
+    operator_button_clicked: bool,
     calc_is_open: bool,
 }
 
@@ -22,8 +22,8 @@ impl Default for Calculator {
     fn default() -> Self {
         Self {
             calc_value: "0".to_string(),
-            label_calc_cur_value: "0".to_string(),
-            calc_plus_clicked: false,
+            label_calc_cur_value: "".to_string(),
+            operator_button_clicked: false,
             calc_is_open: false,
         }
     }
@@ -53,7 +53,7 @@ impl Calculator {
                 {
                     self.calc_value = 0.to_string();
                     self.label_calc_cur_value = "".to_string();
-                    self.calc_plus_clicked = false;
+                    self.operator_button_clicked = false;
                 };
                 if ui
                     .button(
@@ -89,7 +89,8 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    self.label_calc_cur_value = self.calc_value.to_string();
+                    self.label_calc_cur_value =
+                        process_calculation(&self.calc_value, &self.label_calc_cur_value, "/");
                 }
             });
         egui::Grid::new("calc_buttons_row_2")
@@ -106,9 +107,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "7");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "7")
@@ -127,9 +128,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "8");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "8")
@@ -148,9 +149,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "9");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "9")
@@ -159,14 +160,20 @@ impl Calculator {
                         }
                     }
                 }
-                ui.button(
-                    RichText::new("   x   ")
-                        .size(20.0)
-                        .monospace()
-                        .color(WHITE)
-                        .background_color(ORANGE),
-                )
-                .clicked();
+                if ui
+                    .button(
+                        RichText::new("   x   ")
+                            .size(20.0)
+                            .monospace()
+                            .color(WHITE)
+                            .background_color(ORANGE),
+                    )
+                    .clicked()
+                {
+                    self.operator_button_clicked = true;
+                    self.label_calc_cur_value =
+                        process_calculation(&self.calc_value, &self.label_calc_cur_value, "*");
+                }
             });
         egui::Grid::new("calc_buttons_row_3")
             .num_columns(4)
@@ -182,9 +189,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "4");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "4")
@@ -203,9 +210,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "5");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "5")
@@ -224,9 +231,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "6");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "6")
@@ -235,14 +242,20 @@ impl Calculator {
                         }
                     }
                 };
-                ui.button(
-                    RichText::new("   -   ")
-                        .size(20.0)
-                        .monospace()
-                        .color(WHITE)
-                        .background_color(ORANGE),
-                )
-                .clicked();
+                if ui
+                    .button(
+                        RichText::new("   -   ")
+                            .size(20.0)
+                            .monospace()
+                            .color(WHITE)
+                            .background_color(ORANGE),
+                    )
+                    .clicked()
+                {
+                    self.operator_button_clicked = true;
+                    self.label_calc_cur_value =
+                        process_calculation(&self.calc_value, &self.label_calc_cur_value, "-");
+                }
             });
         egui::Grid::new("calc_buttons_row_4")
             .num_columns(4)
@@ -258,9 +271,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "1");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "1")
@@ -279,9 +292,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "2");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "2")
@@ -300,9 +313,9 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    if self.calc_plus_clicked {
+                    if self.operator_button_clicked {
                         self.calc_value = format!("{}", "3");
-                        self.calc_plus_clicked = false;
+                        self.operator_button_clicked = false;
                     } else {
                         if self.calc_value == "0" {
                             self.calc_value = format!("{}", "3")
@@ -321,25 +334,11 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    self.calc_plus_clicked = true;
-                    if self.calc_value.contains(".") {
-                        // parse as float
-                    } else {
-                        // parse as int
-                        if self.label_calc_cur_value.is_empty() {
-                            self.label_calc_cur_value = self.calc_value.to_string();
-                        } else {
-                            let tmp_calc_value: i128 = self.calc_value.parse::<i128>().unwrap();
-                            let tmp_label_calc_value: i128 =
-                                self.label_calc_cur_value.parse::<i128>().unwrap();
-                            let new_label_value = tmp_calc_value + tmp_label_calc_value;
-                            self.label_calc_cur_value = new_label_value.to_string();
-                        }
-                    }
+                    self.operator_button_clicked = true;
+                    self.label_calc_cur_value =
+                        process_calculation(&self.calc_value, &self.label_calc_cur_value, "+");
                 }
             });
-        // 244, 166, 52
-        // egui::Color32::
         egui::Grid::new("calc_buttons_row_5")
             .num_columns(3)
             .spacing([38.0, 4.0])
@@ -387,4 +386,36 @@ impl Calculator {
                 {}
             });
     }
+}
+
+fn process_calculation(calc_value_1: &String, calc_value_2: &String, operator: &str) -> String {
+    if calc_value_1.contains(".") {
+        // parse as float
+        "".to_string()
+    } else {
+        let mut tmp_value: i128 = 0;
+        let tmp_calc_value_1: i128 = calc_value_1.parse::<i128>().unwrap_or(0);
+        let tmp_calc_value_2: i128 = calc_value_2.parse::<i128>().unwrap_or(0);
+        if operator == "+" {
+            tmp_value = tmp_calc_value_1 + tmp_calc_value_2
+        }
+        if operator == "-" {
+            tmp_value = tmp_calc_value_1 - tmp_calc_value_2
+        }
+        if operator == "/" {
+            tmp_value = tmp_calc_value_1 / tmp_calc_value_2
+        }
+        if operator == "*" {
+            if multiply_will_overflow(tmp_calc_value_1, tmp_calc_value_2) {
+                return "overflow!".to_string()
+            } else {
+                tmp_value = tmp_calc_value_1 * tmp_calc_value_2
+            }
+        }
+        tmp_value.to_string()
+    }
+}
+
+fn multiply_will_overflow(x: i128, y: i128) -> bool {
+    x.checked_mul(y).is_none()
 }

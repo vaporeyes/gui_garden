@@ -13,8 +13,11 @@ pub struct TemplateApp {
     value: f32,
     about_is_open: bool,
     calc_is_open: bool,
+    clock_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
+    #[serde(skip)]
+    fractal_clock: crate::apps::FractalClock,
     #[serde(skip)]
     about_me: crate::about::AboutMe,
 }
@@ -27,7 +30,9 @@ impl Default for TemplateApp {
             value: 2.7,
             about_is_open: true,
             calc_is_open: false,
+            clock_is_open: true,
             calculator: Default::default(),
+            fractal_clock: Default::default(),
             about_me: Default::default()
         }
     }
@@ -75,6 +80,11 @@ impl eframe::App for TemplateApp {
                 ui.heading("🔧 Garden Tools");
                 ui.separator();
                 ui.hyperlink("https://github.com/vaporeyes");
+                ui.separator();
+                ui.hyperlink_to(
+                    "my blog",
+                    "https://josh.contact",
+                );
                 egui::warn_if_debug_build(ui);
                 ui.separator();
                 if ui.button("About Me").clicked() {
@@ -100,6 +110,8 @@ impl eframe::App for TemplateApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("🏡 My Digital Garden");
+            ui.separator();
+            self.fractal_clock.ui(ui, Some(seconds_since_midnight()));
         });
 
         egui::Window::new("A Calculator")
@@ -107,6 +119,12 @@ impl eframe::App for TemplateApp {
             .show(ctx, |ui| {
                 self.calculator.ui(ui)
             });
+        
+        // egui::Window::new("Fractal Clock")
+        //     .open(&mut self.clock_is_open)
+        //     .show(ctx, |ui| {
+        //         self.fractal_clock.ui(ui, Some(seconds_since_midnight()))
+        //     });
 
         egui::Window::new("About Me")
             .open(&mut self.about_is_open)
@@ -154,17 +172,40 @@ impl eframe::App for TemplateApp {
     fn post_rendering(&mut self, _window_size_px: [u32; 2], _frame: &eframe::Frame) {}
 }
 
-#[derive(Default)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct Calculator {
-    calculator: crate::apps::Calculator,
+// #[derive(Default)]
+// #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+// pub struct Calculator {
+//     calculator: crate::apps::Calculator,
+// }
+
+// impl eframe::App for Calculator {
+//     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+//         egui::Window::new("A Calculator")
+//             .fixed_size([433.0, 433.0])
+//             .show(ctx, |ui| self.calculator.ui(ui));
+//     }
+// }
+
+fn seconds_since_midnight() -> f64 {
+    use chrono::Timelike;
+    let time = chrono::Local::now().time();
+    time.num_seconds_from_midnight() as f64 + 1e-9 * (time.nanosecond() as f64)
 }
 
-impl eframe::App for Calculator {
+#[derive(Default)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct FractalClockApp {
+    fractal_clock: crate::apps::FractalClock,
+}
+
+impl eframe::App for FractalClockApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::Window::new("A Calculator")
-            .fixed_size([433.0, 433.0])
-            .show(ctx, |ui| self.calculator.ui(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::dark_canvas(&ctx.style()))
+            .show(ctx, |ui| {
+                self.fractal_clock
+                    .ui(ui, Some(seconds_since_midnight()));
+            });
     }
 }
 
