@@ -81,7 +81,7 @@ impl Calculator {
                 }
                 if ui
                     .button(
-                        RichText::new("   ÷   ")
+                        RichText::new("   /   ")
                             .size(20.0)
                             .monospace()
                             .color(WHITE)
@@ -89,8 +89,15 @@ impl Calculator {
                     )
                     .clicked()
                 {
-                    self.label_calc_cur_value =
-                        process_calculation(&self.calc_value, &self.label_calc_cur_value, "/");
+                    self.operator_button_clicked = true;
+                    if self.label_calc_cur_value == "0" {
+                        self.label_calc_cur_value = "Not a number!".to_string();
+                    } else if self.label_calc_cur_value == "".to_string() {
+                        self.label_calc_cur_value = self.calc_value.to_string()
+                    } else {
+                        self.label_calc_cur_value =
+                            process_calculation(&self.calc_value, &self.label_calc_cur_value, "/");
+                    }
                 }
             });
         egui::Grid::new("calc_buttons_row_2")
@@ -403,11 +410,11 @@ fn process_calculation(calc_value_1: &String, calc_value_2: &String, operator: &
             tmp_value = tmp_calc_value_1 - tmp_calc_value_2
         }
         if operator == "/" {
-            tmp_value = tmp_calc_value_1 / tmp_calc_value_2
+            tmp_value =  tmp_calc_value_2 / tmp_calc_value_1
         }
         if operator == "*" {
             if multiply_will_overflow(tmp_calc_value_1, tmp_calc_value_2) {
-                return "overflow!".to_string()
+                return "product too large!".to_string();
             } else {
                 tmp_value = tmp_calc_value_1 * tmp_calc_value_2
             }
@@ -416,6 +423,7 @@ fn process_calculation(calc_value_1: &String, calc_value_2: &String, operator: &
     }
 }
 
+// BIG NUMBAHHHHHHHHHS
 fn multiply_will_overflow(x: i128, y: i128) -> bool {
     x.checked_mul(y).is_none()
 }

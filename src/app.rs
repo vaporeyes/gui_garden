@@ -1,5 +1,7 @@
+use crate::apps::clock_button;
+use crate::apps::easy_mark;
 use eframe::egui;
-use egui::{Ui};
+use egui::Ui;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -14,12 +16,15 @@ pub struct TemplateApp {
     about_is_open: bool,
     calc_is_open: bool,
     clock_is_open: bool,
+    events_is_open: bool,
+    resume_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
     #[serde(skip)]
     fractal_clock: crate::apps::FractalClock,
     #[serde(skip)]
     about_me: crate::about::AboutMe,
+    output_event_history: std::collections::VecDeque<egui::output::OutputEvent>,
 }
 
 impl Default for TemplateApp {
@@ -31,9 +36,12 @@ impl Default for TemplateApp {
             about_is_open: true,
             calc_is_open: false,
             clock_is_open: true,
+            events_is_open: false,
+            resume_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
-            about_me: Default::default()
+            about_me: Default::default(),
+            output_event_history: Default::default(),
         }
     }
 }
@@ -63,7 +71,12 @@ impl eframe::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-
+        for event in &ctx.output().events {
+            self.output_event_history.push_back(event.clone());
+        }
+        while self.output_event_history.len() > 1000 {
+            self.output_event_history.pop_front();
+        }
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
             egui::menu::bar(ui, |ui| {
@@ -73,63 +86,83 @@ impl eframe::App for TemplateApp {
             });
         });
 
-        egui::SidePanel::left("side_panel")
-            .default_width(250.0)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.heading("🔧 Garden Tools");
-                ui.separator();
-                ui.hyperlink("https://github.com/vaporeyes");
-                ui.separator();
-                ui.hyperlink_to(
-                    "my blog",
-                    "https://josh.contact",
-                );
-                egui::warn_if_debug_build(ui);
-                ui.separator();
-                if ui.button("About Me").clicked() {
-                    self.about_is_open = true;
-                }
-                if ui.button("Calculator").clicked() {
-                    self.calc_is_open = true;
-                }
-                ui.separator();
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        ui.label("powered by ");
-                        ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-                        ui.label(" and ");
-                        ui.hyperlink_to(
-                            "eframe",
-                            "https://github.com/emilk/egui/tree/master/eframe",
-                        );
+        if is_mobile(ctx) == false {
+            egui::SidePanel::left("side_panel")
+                .default_width(250.0)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.heading("🔧 Garden Tools");
+                    ui.separator();
+                    ui.hyperlink_to("my personal github", "https://github.com/vaporeyes");
+                    ui.separator();
+                    ui.hyperlink_to("my blog", "https://josh.contact");
+                    egui::warn_if_debug_build(ui);
+                    ui.separator();
+                    if ui.button("About Me").clicked() {
+                        self.about_is_open = true;
+                    }
+                    if ui.button("Calculator").clicked() {
+                        self.calc_is_open = true;
+                    }
+                    if ui.button("Pseudo-Resumé").clicked() {
+                        self.resume_is_open = true;
+                    }
+                    ui.separator();
+                    if ui.button("App Events").clicked() {
+                        self.events_is_open = true;
+                    }
+                    ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.label("powered by ");
+                            ui.hyperlink_to("egui", "https://github.com/emilk/egui");
+                            ui.label(" and ");
+                            ui.hyperlink_to(
+                                "eframe",
+                                "https://github.com/emilk/egui/tree/master/eframe",
+                            );
+                        });
                     });
                 });
-            });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("🏡 My Digital Garden");
-            ui.separator();
             self.fractal_clock.ui(ui, Some(seconds_since_midnight()));
+            ui.vertical_centered(|ui| {
+                ui.heading("🏡 My Digital Garden");
+            });
         });
 
         egui::Window::new("A Calculator")
             .open(&mut self.calc_is_open)
-            .show(ctx, |ui| {
-                self.calculator.ui(ui)
-            });
-        
-        // egui::Window::new("Fractal Clock")
-        //     .open(&mut self.clock_is_open)
-        //     .show(ctx, |ui| {
-        //         self.fractal_clock.ui(ui, Some(seconds_since_midnight()))
-        //     });
+            .show(ctx, |ui| self.calculator.ui(ui));
+
+        egui::Window::new("Pseudo-Resumé")
+            .open(&mut self.resume_is_open)
+            .fixed_size([760.0, 760.0])
+            .show(ctx, |ui| easy_mark(ui, EASYMARK_DATA));
 
         egui::Window::new("About Me")
             .open(&mut self.about_is_open)
+            .show(ctx, |ui| self.about_me.ui(ui));
+
+        egui::Window::new("📤 Output Events")
+            .open(&mut self.events_is_open)
+            .resizable(true)
+            .default_width(520.0)
             .show(ctx, |ui| {
-                self.about_me.ui(ui)
+                clock_button(ui, seconds_since_midnight());
+                ui.label("Recent output events from egui.");
+
+                ui.separator();
+
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for event in &self.output_event_history {
+                            ui.label(format!("{:?}", event));
+                        }
+                    });
             });
     }
 
@@ -172,41 +205,10 @@ impl eframe::App for TemplateApp {
     fn post_rendering(&mut self, _window_size_px: [u32; 2], _frame: &eframe::Frame) {}
 }
 
-// #[derive(Default)]
-// #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-// pub struct Calculator {
-//     calculator: crate::apps::Calculator,
-// }
-
-// impl eframe::App for Calculator {
-//     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-//         egui::Window::new("A Calculator")
-//             .fixed_size([433.0, 433.0])
-//             .show(ctx, |ui| self.calculator.ui(ui));
-//     }
-// }
-
 fn seconds_since_midnight() -> f64 {
     use chrono::Timelike;
     let time = chrono::Local::now().time();
     time.num_seconds_from_midnight() as f64 + 1e-9 * (time.nanosecond() as f64)
-}
-
-#[derive(Default)]
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-pub struct FractalClockApp {
-    fractal_clock: crate::apps::FractalClock,
-}
-
-impl eframe::App for FractalClockApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default()
-            .frame(egui::Frame::dark_canvas(&ctx.style()))
-            .show(ctx, |ui| {
-                self.fractal_clock
-                    .ui(ui, Some(seconds_since_midnight()));
-            });
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -244,76 +246,39 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
     });
 }
 
-// fn custom_window_frame(
-//     ctx: &egui::Context,
-//     frame: &mut eframe::Frame,
-//     title: &str,
-//     add_contents: impl FnOnce(&mut egui::Ui),
-// ) {
-//     use egui::*;
-//     let text_color = ctx.style().visuals.text_color();
+pub fn is_mobile(ctx: &egui::Context) -> bool {
+    let screen_size = ctx.input().screen_rect().size();
+    screen_size.x < 550.0
+}
 
-//     // Height of the title bar
-//     let height = 28.0;
+const EASYMARK_DATA: &str = r#"
+# Digital Garden
 
-//     egui::Area::new("a window").show(ctx, |ui| {
-//         let rect = ui.max_rect();
-//         let painter = ui.painter();
+I saw the idea of a digital garden and it intrigued me, so I
+decided to try using egui and this is the result 😁
 
-//         // Paint the frame:
-//         painter.rect(
-//             rect.shrink(1.0),
-//             10.0,
-//             ctx.style().visuals.window_fill(),
-//             Stroke::new(1.0, text_color),
-//         );
+## About Me
 
-//         // Paint the title:
-//         painter.text(
-//             rect.center_top() + vec2(0.0, height / 2.0),
-//             Align2::CENTER_CENTER,
-//             title,
-//             FontId::proportional(height * 0.8),
-//             text_color,
-//         );
+I am currently a devops engineer in Middle Tennessee and I enjoy
+tinkering with different programming languages, specifically
+python, rust, javascript and elixir
 
-//         // Paint the line under the title:
-//         painter.line_segment(
-//             [
-//                 rect.left_top() + vec2(2.0, height),
-//                 rect.right_top() + vec2(-2.0, height),
-//             ],
-//             Stroke::new(1.0, text_color),
-//         );
+## Pseudo-Resumé
 
-//         // Add the close button:
-//         let close_response = ui.put(
-//             Rect::from_min_size(rect.left_top(), Vec2::splat(height)),
-//             Button::new(RichText::new("❌").size(height - 4.0)).frame(false),
-//         );
-//         if close_response.clicked() {
-//             frame.close();
-//         }
+- `2008-2011` - *DTS America*: I started out in the private sector in
+2008 as a helpdesk associate and moved to system administrator
+shortly after. Lots of network engineering as well.
+- `2011-2016` - *Centerstone*: Non-profit as the senior system
+administrator. A lot of VMware and virtualization on-prem, then.
+- `2016-2017` - *BNY Mellon*: Contract work with Powershell and Cisco
+UCS
+- `2017-2018` - *Ingram Content Group*: Linux engineer with the book
+group maintaining the core Linux infrastructure
+- `2018-2018` - *NASBA*: Systems engineer architecting medium-sized apps
+until the IT department was outsourced suddenly
+- `2018-2019` - *Eventbrite*: Site-reliability engineer with the platform
+team responsible for several types of workloads in the AWS cloud
+- `2019-present`: *XOi Technologies*: Senior platform engineer with duties
+primarily in AWS for mobile, web and backend applications
 
-//         // Interact with the title bar (drag to move window):
-//         let title_bar_rect = {
-//             let mut rect = rect;
-//             rect.max.y = rect.min.y + height;
-//             rect
-//         };
-//         let title_bar_response = ui.interact(title_bar_rect, Id::new("title_bar"), Sense::click());
-//         if title_bar_response.is_pointer_button_down_on() {
-//             frame.drag_window();
-//         }
-
-//         // Add the contents:
-//         let content_rect = {
-//             let mut rect = rect;
-//             rect.min.y = title_bar_rect.max.y;
-//             rect
-//         }
-//         .shrink(4.0);
-//         let mut content_ui = ui.child_ui(content_rect, *ui.layout());
-//         add_contents(&mut content_ui);
-//     });
-// }
+"#;

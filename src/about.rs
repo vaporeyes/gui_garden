@@ -6,16 +6,16 @@ pub struct AboutMe {}
 
 impl Default for AboutMe {
     fn default() -> Self {
-      Self {}
+        Self {}
     }
 }
 
 impl AboutMe {
     pub fn ui(&mut self, ui: &mut Ui) {
         egui::TopBottomPanel::top("top_panel")
-      .resizable(true)
-      .min_height(32.0)
-      .show_inside(ui, |ui| {
+        .resizable(true)
+        .min_height(32.0)
+        .show_inside(ui, |ui| {
           egui::ScrollArea::vertical().show(ui, |ui| {
               ui.with_layout(
                   egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(true),
@@ -28,35 +28,35 @@ impl AboutMe {
                   },
               );
           });
-      });
-        ui.label("Life Skills");
-        egui::Grid::new("life_skills")
-            .num_columns(2)
-            .spacing([40.0, 4.0])
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label("Drawing");
-                let progress = 300.0 / 360.0;
-                let progress_bar = egui::ProgressBar::new(progress).show_percentage();
-                ui.add(progress_bar);
-                ui.end_row();
-                ui.label("Painting");
-                let progress = 250.0 / 360.0;
-                let progress_bar = egui::ProgressBar::new(progress).show_percentage();
-                ui.add(progress_bar);
-                ui.end_row();
-                ui.label("Cooking");
-                let progress = 290.0 / 360.0;
-                let progress_bar = egui::ProgressBar::new(progress).show_percentage();
-                ui.add(progress_bar);
-                ui.end_row();
-                ui.label("Model Building: Plastic Models");
-                let progress = 200.0 / 360.0;
-                let progress_bar = egui::ProgressBar::new(progress).show_percentage();
-                ui.add(progress_bar);
-                ui.end_row();
-            });
-        ui.separator();
+        });
+        // ui.label("Life Skills");
+        // egui::Grid::new("life_skills")
+        //     .num_columns(2)
+        //     .spacing([40.0, 4.0])
+        //     .striped(true)
+        //     .show(ui, |ui| {
+        //         ui.label("Drawing");
+        //         let progress = 300.0 / 360.0;
+        //         let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+        //         ui.add(progress_bar);
+        //         ui.end_row();
+        //         ui.label("Painting");
+        //         let progress = 250.0 / 360.0;
+        //         let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+        //         ui.add(progress_bar);
+        //         ui.end_row();
+        //         ui.label("Cooking");
+        //         let progress = 290.0 / 360.0;
+        //         let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+        //         ui.add(progress_bar);
+        //         ui.end_row();
+        //         ui.label("Model Building: Plastic Models");
+        //         let progress = 200.0 / 360.0;
+        //         let progress_bar = egui::ProgressBar::new(progress).show_percentage();
+        //         ui.add(progress_bar);
+        //         ui.end_row();
+        //     });
+        // ui.separator();
         ui.label("Work Skills");
         egui::Grid::new("work_skills")
             .num_columns(2)
