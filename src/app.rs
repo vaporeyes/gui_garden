@@ -29,6 +29,8 @@ pub struct TemplateApp {
     about_me: crate::about::AboutMe,
     #[serde(skip)]
     digital_garden: DigitalGarden,
+    /// Persisted path to the markdown notes directory. `~` is expanded at load time.
+    notes_directory_path: String,
     output_event_history: std::collections::VecDeque<egui::output::OutputEvent>,
 }
 
@@ -48,6 +50,7 @@ impl Default for TemplateApp {
             fractal_clock: Default::default(),
             about_me: Default::default(),
             digital_garden: DigitalGarden::default(),
+            notes_directory_path: String::new(),
             output_event_history: Default::default(),
         }
     }
@@ -61,11 +64,28 @@ impl TemplateApp {
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
-        if let Some(storage) = cc.storage {
-            return eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default();
+        let mut app: Self = if let Some(storage) = cc.storage {
+            eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
+        } else {
+            Default::default()
+        };
+
+        // Apply the digital-garden theme to the whole app up-front, so the
+        // outer menu bar + sidebar + window chrome pick up the amber palette
+        // even before the Digital Garden window is opened.
+        app.digital_garden.apply_theme(&cc.egui_ctx);
+
+        // Auto-load the persisted notes directory so the digital garden is ready
+        // on launch without the user re-entering the path every session.
+        let trimmed = app.notes_directory_path.trim();
+        if !trimmed.is_empty() {
+            let path = expand_path(trimmed);
+            if let Err(err) = app.digital_garden.set_notes_directory(&path) {
+                eprintln!("Error auto-loading notes directory {:?}: {}", path, err);
+            }
         }
 
-        Default::default()
+        app
     }
 }
 
@@ -119,6 +139,13 @@ impl eframe::App for TemplateApp {
                     if ui.button("Digital Garden").clicked() {
                         self.digital_garden_is_open = true;
                     }
+                    if self.digital_garden.note_directory.is_some()
+                        && ui.button("Change notes folder").clicked()
+                    {
+                        // Drop the loaded directory so the welcome/config screen
+                        // re-appears with the current path prefilled for editing.
+                        self.digital_garden.note_directory = None;
+                    }
                     ui.separator();
                     if ui.button("App Events").clicked() {
                         self.events_is_open = true;
@@ -161,24 +188,53 @@ impl eframe::App for TemplateApp {
         egui::Window::new("Digital Garden")
             .open(&mut self.digital_garden_is_open)
             .resizable(true)
-            .default_width(800.0)
-            .default_height(600.0)
+            .default_width(1080.0)
+            .default_height(720.0)
+            .min_width(640.0)
+            .min_height(420.0)
             .show(ctx, |ui| {
                 // If notes directory is not set, show a file picker or allow manual path entry
                 if self.digital_garden.note_directory.is_none() {
                     ui.heading("Welcome to Digital Garden");
-                    ui.label("Please select a directory containing your markdown notes:");
-                    
-                    if ui.button("Set Example Path").clicked() {
-                        // For demonstration, set to a hardcoded path (you would replace this with a file picker)
-                        let example_path = PathBuf::from("./notes");
-                        if let Err(err) = self.digital_garden.set_notes_directory(&example_path) {
-                            eprintln!("Error setting notes directory: {}", err);
+                    ui.label("Enter a path to a directory of markdown notes:");
+
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.notes_directory_path)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("/absolute/path or ~/relative/to/home"),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Load").clicked() {
+                            let path = expand_path(self.notes_directory_path.trim());
+                            if let Err(err) = self.digital_garden.set_notes_directory(&path) {
+                                eprintln!("Error setting notes directory {:?}: {}", path, err);
+                            }
                         }
-                    }
+                        if ui.button("Use astro-blog posts").clicked() {
+                            self.notes_directory_path =
+                                "~/dev/projects/astro-blog/src/content/posts".to_string();
+                            let path = expand_path(self.notes_directory_path.trim());
+                            if let Err(err) = self.digital_garden.set_notes_directory(&path) {
+                                eprintln!("Error setting notes directory {:?}: {}", path, err);
+                            }
+                        }
+                    });
+
+                    ui.label(
+                        egui::RichText::new(
+                            "Accepts any directory of `.md` files with YAML frontmatter. \
+                             Astro's `pubDate` is recognized.",
+                        )
+                        .weak(),
+                    );
                 } else {
-                    // Update the digital garden UI
-                    self.digital_garden.update(ctx, _frame);
+                    // Render the digital garden *inside* the window's ui so its
+                    // panels stay scoped to the floating window rather than
+                    // leaking out to the root context.
+                    self.digital_garden.ui(ui);
                 }
             });
 
@@ -270,6 +326,17 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
 pub fn is_mobile(ctx: &egui::Context) -> bool {
     let screen_size = ctx.input(|i| i.screen_rect().size());
     screen_size.x < 550.0
+}
+
+/// Minimal `~/` expansion so users can enter paths the same way they'd type them
+/// in a shell. Avoids pulling in `shellexpand` / `dirs` for a single prefix.
+fn expand_path(s: &str) -> PathBuf {
+    if let Some(stripped) = s.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(stripped);
+        }
+    }
+    PathBuf::from(s)
 }
 
 const EASYMARK_DATA: &str = r#"

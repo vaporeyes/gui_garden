@@ -43,76 +43,75 @@ impl Sidebar {
     /// Show the sidebar
     pub fn ui(&mut self, ui: &mut Ui, note_directory: &NoteDirectory) -> Option<String> {
         let mut clicked_note = None;
+        let accent = ui.visuals().selection.stroke.color;
 
-        // Search bar
+        // Quick-filter search bar
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("🔍");
-            if ui.text_edit_singleline(&mut self.search_query).changed() {
+            ui.label(RichText::new("🔍").weak());
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.search_query)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("filter notes"),
+            );
+            if resp.changed() {
                 if !self.search_query.is_empty() {
                     self.search_results = note_directory.search(&self.search_query);
                 } else {
                     self.search_results.clear();
                 }
             }
+        });
 
-            if ui.button("✕").clicked() {
+        if !self.search_query.is_empty() {
+            if ui.small_button("clear filter").clicked() {
                 self.search_query.clear();
                 self.search_results.clear();
             }
-        });
-
-        ui.separator();
-
-        // Graph view toggle
-        if ui
-            .checkbox(&mut self.show_graph, "Show Graph View")
-            .clicked()
-        {
-            // Toggle was handled by the checkbox
         }
 
+        ui.add_space(10.0);
+        ui.checkbox(&mut self.show_graph, "Show graph view");
+        ui.add_space(10.0);
         ui.separator();
 
-        // Show search results if any
+        // Show search results, or the folder tree
         if !self.search_results.is_empty() {
-            ui.heading("Search Results");
-            ui.separator();
+            section_label(ui, "matches", accent);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for note in &self.search_results {
+                        let is_selected = self.selected_note.as_deref() == Some(&note.id);
+                        let text = if is_selected {
+                            RichText::new(note.title()).strong().color(accent)
+                        } else {
+                            RichText::new(note.title())
+                        };
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for note in &self.search_results {
-                    let is_selected = self.selected_note.as_deref() == Some(&note.id);
-                    let text = if is_selected {
-                        RichText::new(&note.title())
-                            .strong()
-                            .color(ui.visuals().selection.stroke.color)
-                    } else {
-                        RichText::new(&note.title())
-                    };
-
-                    if ui.link(text).clicked() {
-                        self.selected_note = Some(note.id.clone());
-                        clicked_note = Some(note.id.clone());
+                        if ui.link(text).clicked() {
+                            self.selected_note = Some(note.id.clone());
+                            clicked_note = Some(note.id.clone());
+                        }
                     }
-                }
-            });
+                });
         } else {
-            // Show folder structure
-            ui.heading("Notes");
-            ui.separator();
-
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(click) =
-                    self.show_folder(ui, &note_directory.folder_structure, note_directory, 0)
-                {
-                    clicked_note = Some(click);
-                }
-            });
+            section_label(ui, "notes", accent);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(click) =
+                        self.show_folder(ui, &note_directory.folder_structure, note_directory, 0)
+                    {
+                        clicked_note = Some(click);
+                    }
+                });
         }
 
         clicked_note
     }
 
-    /// Show a folder in the sidebar
+    /// Show a folder in the sidebar using a native `CollapsingHeader`.
     fn show_folder(
         &mut self,
         ui: &mut Ui,
@@ -120,65 +119,59 @@ impl Sidebar {
         note_directory: &NoteDirectory,
         depth: usize,
     ) -> Option<String> {
-        let indent = "    ".repeat(depth);
         let mut clicked_note = None;
-
-        // Create a unique ID for the folder based on its path
         let folder_id = folder.path.to_string_lossy().to_string();
-        let is_expanded = *self
-            .expanded_folders
-            .entry(folder_id.clone())
-            .or_insert(depth == 0);
 
-        // Folder header with expand/collapse icon
-        let folder_icon = if is_expanded { "📂" } else { "📁" };
-        let folder_text = format!("{}{} {}", indent, folder_icon, folder.name);
+        // Top-level "posts" folder is expanded by default; nested folders
+        // start collapsed to keep the tree scannable.
+        let header =
+            egui::CollapsingHeader::new(RichText::new(&folder.name).strong().monospace())
+                .id_salt(&folder_id)
+                .default_open(depth == 0);
 
-        if ui.button(folder_text).clicked() {
-            *self.expanded_folders.get_mut(&folder_id).unwrap() = !is_expanded;
-        }
-
-        // Show folder contents if expanded
-        if is_expanded {
-            // Show subfolders
+        header.show(ui, |ui| {
             for subfolder in &folder.folders {
                 if let Some(note_id) = self.show_folder(ui, subfolder, note_directory, depth + 1) {
                     clicked_note = Some(note_id);
                 }
             }
 
-            // Show notes
             for note_id in &folder.notes {
-                if let Some(note) = note_directory.get_note(note_id) {
-                    // Skip draft notes
-                    if note.is_draft() {
-                        continue;
-                    }
+                let Some(note) = note_directory.get_note(note_id) else { continue };
+                if note.is_draft() {
+                    continue;
+                }
 
-                    let is_selected = self.selected_note.as_deref() == Some(note_id);
-                    let note_icon = "📄";
-                    let note_text = format!("{}{} {}", indent, note_icon, note.title());
+                let is_selected = self.selected_note.as_deref() == Some(note_id);
+                let accent = ui.visuals().selection.stroke.color;
+                let text = if is_selected {
+                    RichText::new(note.title()).strong().color(accent)
+                } else {
+                    RichText::new(note.title())
+                };
 
-                    let text = if is_selected {
-                        RichText::new(note_text)
-                            .strong()
-                            .color(ui.visuals().selection.stroke.color)
-                    } else {
-                        RichText::new(note_text)
-                    };
-
-                    ui.horizontal(|ui| {
-                        ui.add_space((depth + 1) as f32 * 10.0);
-
-                        if ui.link(text).clicked() {
-                            self.selected_note = Some(note_id.clone());
-                            clicked_note = Some(note_id.clone());
-                        }
-                    });
+                if ui
+                    .add(egui::Label::new(text).sense(egui::Sense::click()))
+                    .clicked()
+                {
+                    self.selected_note = Some(note_id.clone());
+                    clicked_note = Some(note_id.clone());
                 }
             }
-        }
+        });
 
         clicked_note
     }
+}
+
+/// Small-caps section label, colored with the theme accent.
+fn section_label(ui: &mut Ui, text: &str, accent: egui::Color32) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(text.to_uppercase())
+            .small()
+            .strong()
+            .color(accent),
+    );
+    ui.add_space(4.0);
 }

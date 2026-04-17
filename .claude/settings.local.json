@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check *)",
+      "Bash(~/.cargo/bin/cargo check *)",
+      "Bash(/opt/homebrew/bin/rg \"^error|^\\\\s+--> .*\\\\.rs\")",
+      "Bash(~/.cargo/bin/cargo build *)",
+      "Bash(~/.cargo/bin/cargo test *)",
+      "Bash(/opt/homebrew/bin/rg \"^error\" -A 8)"
+    ]
+  }
+}

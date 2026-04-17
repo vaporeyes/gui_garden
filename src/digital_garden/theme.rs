@@ -33,14 +33,16 @@ pub struct ThemeConfig {
 
 impl Default for ThemeConfig {
     fn default() -> Self {
+        // Mirrors the josh.contact / astro-blog dark palette:
+        // warm amber accent on deep near-black surfaces.
         Self {
-            name: "Default Dark".to_string(),
+            name: "Garden Dark".to_string(),
             is_dark: true,
-            accent_color: "#7b68ee".to_string(), // Medium slate blue
-            background_color: "#1e1e2e".to_string(),
-            text_color: "#cdd6f4".to_string(),
-            link_color: "#89b4fa".to_string(),
-            code_background: "#282a36".to_string(),
+            accent_color: "#f59e0b".to_string(),
+            background_color: "#0c0c0b".to_string(),
+            text_color: "#ece9e1".to_string(),
+            link_color: "#fbbf24".to_string(),
+            code_background: "#151413".to_string(),
             custom_css: None,
         }
     }
@@ -50,23 +52,23 @@ impl Default for ThemeConfig {
 pub fn get_default_themes() -> Vec<ThemeConfig> {
     vec![
         ThemeConfig {
-            name: "Default Dark".to_string(),
+            name: "Garden Dark".to_string(),
             is_dark: true,
-            accent_color: "#7b68ee".to_string(),
-            background_color: "#1e1e2e".to_string(),
-            text_color: "#cdd6f4".to_string(),
-            link_color: "#89b4fa".to_string(),
-            code_background: "#282a36".to_string(),
+            accent_color: "#f59e0b".to_string(),
+            background_color: "#0c0c0b".to_string(),
+            text_color: "#ece9e1".to_string(),
+            link_color: "#fbbf24".to_string(),
+            code_background: "#151413".to_string(),
             custom_css: None,
         },
         ThemeConfig {
-            name: "Default Light".to_string(),
+            name: "Garden Light".to_string(),
             is_dark: false,
-            accent_color: "#7b68ee".to_string(),
-            background_color: "#f5f5f5".to_string(),
-            text_color: "#2e3440".to_string(),
-            link_color: "#5e81ac".to_string(),
-            code_background: "#eceff4".to_string(),
+            accent_color: "#b45309".to_string(),
+            background_color: "#faf7f0".to_string(),
+            text_color: "#26231f".to_string(),
+            link_color: "#b45309".to_string(),
+            code_background: "#f0ece1".to_string(),
             custom_css: None,
         },
         ThemeConfig {
@@ -156,6 +158,19 @@ impl ThemeManager {
         self.available_themes.sort();
     }
     
+    /// Parsed accent color of the current theme, for inline use in widgets.
+    pub fn accent(&self) -> Color32 {
+        hex_to_color32(&self.current_theme.accent_color)
+    }
+
+    /// Parsed muted text color (used for metadata rows and secondary labels).
+    pub fn muted_text(&self) -> Color32 {
+        // Soften the theme's text color by blending toward the background.
+        let text = hex_to_color32(&self.current_theme.text_color);
+        let bg = hex_to_color32(&self.current_theme.background_color);
+        blend(text, bg, 0.55)
+    }
+
     /// Apply the current theme to the UI
     pub fn apply_theme(&self, ctx: &Context) {
         let mut visuals = if self.current_theme.is_dark {
@@ -253,10 +268,22 @@ impl ThemeManager {
 /// Convert a hex color string to an egui Color32
 pub fn hex_to_color32(hex: &str) -> Color32 {
     let hex = hex.trim_start_matches('#');
-    
+
     let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
     let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
     let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-    
+
     Color32::from_rgb(r, g, b)
+}
+
+/// Linear-space blend between two colors. `t=0.0` returns `a`, `t=1.0` returns `b`.
+fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ar = Rgba::from(a);
+    let br = Rgba::from(b);
+    let r = ar.r() * (1.0 - t) + br.r() * t;
+    let g = ar.g() * (1.0 - t) + br.g() * t;
+    let bl = ar.b() * (1.0 - t) + br.b() * t;
+    let al = ar.a() * (1.0 - t) + br.a() * t;
+    Color32::from(Rgba::from_rgba_premultiplied(r, g, bl, al))
 }

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -17,9 +17,11 @@ pub struct Frontmatter {
     pub draft: bool,
 
     /// When the note was created
+    #[serde(default, alias = "pubDate", deserialize_with = "deserialize_flexible_date")]
     pub created: Option<DateTime<Utc>>,
 
     /// When the note was last updated
+    #[serde(default, deserialize_with = "deserialize_flexible_date")]
     pub updated: Option<DateTime<Utc>>,
 
     /// Tags associated with the note
@@ -134,6 +136,26 @@ impl Note {
     pub fn is_draft(&self) -> bool {
         self.frontmatter.draft
     }
+}
+
+/// Accepts either an RFC3339 datetime (`2026-03-23T10:00:00Z`) or a plain YAML
+/// date (`2026-03-23`, as Astro uses in `pubDate`). Plain dates are promoted
+/// to midnight UTC.
+fn deserialize_flexible_date<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        DateTime(DateTime<Utc>),
+        Naive(chrono::NaiveDate),
+    }
+
+    Ok(Option::<Raw>::deserialize(deserializer)?.map(|r| match r {
+        Raw::DateTime(dt) => dt,
+        Raw::Naive(d) => d.and_hms_opt(0, 0, 0).unwrap().and_utc(),
+    }))
 }
 
 /// Parses frontmatter from content, returning (frontmatter, remaining_content)
