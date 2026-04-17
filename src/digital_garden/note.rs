@@ -63,10 +63,6 @@ pub struct Note {
 
     /// Links within this note to other notes
     pub links: Vec<NoteLink>,
-
-    /// Backlinks - notes that link to this note
-    #[serde(skip)]
-    pub backlinks: Vec<String>,
 }
 
 impl Note {
@@ -94,7 +90,6 @@ impl Note {
             frontmatter,
             content,
             links,
-            backlinks: Vec::new(),
         })
     }
 

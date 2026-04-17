@@ -1,5 +1,5 @@
-mod frontmatter;
 mod graph_view;
+mod history;
 mod markdown_parser;
 mod note;
 mod note_directory;
@@ -7,7 +7,8 @@ mod search;
 mod sidebar;
 mod theme;
 
-pub use frontmatter::*;
+use history::History;
+
 pub use graph_view::*;
 pub use markdown_parser::*;
 pub use note::*;
@@ -55,13 +56,9 @@ pub struct DigitalGarden {
     #[serde(skip)]
     search: Search,
 
-    /// Navigation history
+    /// Navigation history (browser-style back/forward with dedupe + cap).
     #[serde(skip)]
-    history: Vec<String>,
-
-    /// Current position in history
-    #[serde(skip)]
-    history_position: usize,
+    history: History,
 
     /// Search dialog is open
     #[serde(skip)]
@@ -94,8 +91,7 @@ impl Default for DigitalGarden {
             graph_view: GraphView::new(),
             theme_manager: ThemeManager::new(),
             search: Search::new(),
-            history: Vec::new(),
-            history_position: 0,
+            history: History::new(),
             search_open: false,
             graph_open: false,
             settings_open: false,
@@ -129,12 +125,18 @@ impl DigitalGarden {
                 self.graph_view
                     .build_graph(self.note_directory.as_ref().unwrap());
 
+                // Fresh directory → fresh history. Previously, stale
+                // `history_position` from a prior session could index out
+                // of bounds on the new, shorter history.
+                self.history.clear();
+
                 // Load the index note if it exists, otherwise load the first note
                 if self.load_note("index").is_none() {
                     if let Some(directory) = &self.note_directory {
                         if let Some(first_note) = directory.published_notes().first() {
+                            let first_id = first_note.id.clone();
                             self.current_note = Some(first_note.clone());
-                            self.history = vec![first_note.id.clone()];
+                            self.history.reset(first_id);
                         }
                     }
                 }
@@ -145,104 +147,59 @@ impl DigitalGarden {
         }
     }
 
-    /// Load a note by ID
+    /// Load a note by id or wiki-link query. Delegates resolution to
+    /// `NoteDirectory::resolve_link`, which handles exact id, case-insensitive
+    /// id, slug, and title-match fallbacks (and filters out drafts).
     pub fn load_note(&mut self, note_id: &str) -> Option<Arc<Note>> {
-        if let Some(directory) = &self.note_directory {
-            if let Some(note) = directory.get_note(note_id) {
-                // Don't load draft notes
-                if note.is_draft() {
-                    return None;
-                }
+        let directory = self.note_directory.as_ref()?;
+        let note = directory.resolve_link(note_id)?;
 
-                self.current_note = Some(note.clone());
+        // History and sidebar are keyed by the *canonical* id, not the
+        // raw query — so a wiki-link written as "Elegy Campaign Player"
+        // still back-navigates correctly after resolution.
+        let canonical_id = note.id.clone();
+        self.current_note = Some(note.clone());
+        self.history.push(canonical_id.clone());
+        self.sidebar.selected_note = Some(canonical_id);
 
-                // Update history
-                if self.history.is_empty() || self.history[self.history_position] != note_id {
-                    // Truncate history if we're not at the end
-                    if self.history_position < self.history.len() - 1 {
-                        self.history.truncate(self.history_position + 1);
-                    }
-
-                    self.history.push(note_id.to_string());
-                    self.history_position = self.history.len() - 1;
-                }
-
-                // Update sidebar selection
-                self.sidebar.selected_note = Some(note_id.to_string());
-
-                return Some(note);
-            }
-        }
-
-        None
+        Some(note)
     }
 
     /// Load a note by slug
     pub fn load_note_by_slug(&mut self, slug: &str) -> Option<Arc<Note>> {
-        if let Some(directory) = &self.note_directory {
-            if let Some(note) = directory.get_note_by_slug(slug) {
-                // Don't load draft notes
-                if note.is_draft() {
-                    return None;
-                }
-
-                self.current_note = Some(note.clone());
-
-                // Update history
-                if self.history.is_empty() || self.history[self.history_position] != note.id {
-                    // Truncate history if we're not at the end
-                    if self.history_position < self.history.len() - 1 {
-                        self.history.truncate(self.history_position + 1);
-                    }
-
-                    self.history.push(note.id.clone());
-                    self.history_position = self.history.len() - 1;
-                }
-
-                // Update sidebar selection
-                self.sidebar.selected_note = Some(note.id.clone());
-
-                return Some(note);
-            }
+        let directory = self.note_directory.as_ref()?;
+        let note = directory.get_note_by_slug(slug)?;
+        if note.is_draft() {
+            return None;
         }
 
-        None
+        let canonical_id = note.id.clone();
+        self.current_note = Some(note.clone());
+        self.history.push(canonical_id.clone());
+        self.sidebar.selected_note = Some(canonical_id);
+
+        Some(note)
     }
 
     /// Navigate back in history
     pub fn navigate_back(&mut self) -> Option<Arc<Note>> {
-        if self.history_position > 0 {
-            self.history_position -= 1;
-            let note_id = &self.history[self.history_position];
-
-            if let Some(directory) = &self.note_directory {
-                if let Some(note) = directory.get_note(note_id) {
-                    self.current_note = Some(note.clone());
-                    self.sidebar.selected_note = Some(note_id.clone());
-                    return Some(note);
-                }
-            }
-        }
-
-        None
+        let target = self.history.back()?.to_string();
+        self.load_current_from_directory(&target)
     }
 
     /// Navigate forward in history
     pub fn navigate_forward(&mut self) -> Option<Arc<Note>> {
-        if self.history_position < self.history.len() - 1 {
-            self.history_position += 1;
-            let note_id = &self.history[self.history_position];
+        let target = self.history.forward()?.to_string();
+        self.load_current_from_directory(&target)
+    }
 
-            if let Some(directory) = &self.note_directory {
-                if let Some(note) = directory.get_note(note_id) {
-                    self.current_note = Some(note.clone());
-                    self.sidebar.selected_note = Some(note_id.clone());
-                    return Some(note);
-                }
-            }
-        }
-
-        None
+    /// Internal helper for back/forward: swap in the note at `id` without
+    /// touching history (since history already moved the cursor).
+    fn load_current_from_directory(&mut self, id: &str) -> Option<Arc<Note>> {
+        let note = self.note_directory.as_ref()?.get_note(id)?;
+        self.current_note = Some(note.clone());
+        self.sidebar.selected_note = Some(id.to_string());
+        Some(note)
     }
 
     /// Render the digital garden inside the given `Ui`. Panels use `show_inside`
@@ -401,9 +358,8 @@ impl DigitalGarden {
                 self.show_sidebar = !self.show_sidebar;
             }
 
-            let back_enabled = self.history_position > 0;
-            let forward_enabled =
-                !self.history.is_empty() && self.history_position < self.history.len() - 1;
+            let back_enabled = self.history.can_go_back();
+            let forward_enabled = self.history.can_go_forward();
 
             if ui
                 .add_enabled(back_enabled, egui::Button::new("←"))
@@ -533,7 +489,8 @@ impl DigitalGarden {
                         );
 
                         // Backlinks footer
-                        if !note.backlinks.is_empty() {
+                        let backlinks = directory.backlinks(&note.id);
+                        if !backlinks.is_empty() {
                             ui.add_space(28.0);
                             ui.separator();
                             ui.add_space(8.0);
@@ -544,7 +501,7 @@ impl DigitalGarden {
                                     .color(accent),
                             );
                             ui.add_space(6.0);
-                            for source_id in &note.backlinks {
+                            for source_id in backlinks {
                                 if let Some(source) = directory.get_note(source_id) {
                                     if ui.link(source.title()).clicked() {
                                         link_selected = Some(source.id.clone());
