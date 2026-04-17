@@ -3,6 +3,7 @@
 mod about;
 mod app;
 mod apps;
+mod digital_garden;
 pub use app::TemplateApp;
 
 pub trait View {

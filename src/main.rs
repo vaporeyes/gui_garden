@@ -11,7 +11,7 @@ fn main() {
     eframe::run_native(
         "digital garden",
         native_options,
-        Box::new(|cc| Box::new(digital_garden::TemplateApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(digital_garden::TemplateApp::new(cc)))),
     );
 }
 

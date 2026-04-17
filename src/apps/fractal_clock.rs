@@ -35,7 +35,7 @@ impl Default for FractalClock {
 impl FractalClock {
     pub fn ui(&mut self, ui: &mut Ui, seconds_since_midnight: Option<f64>) {
         if !self.paused {
-            self.time = seconds_since_midnight.unwrap_or_else(|| ui.input().time);
+            self.time = seconds_since_midnight.unwrap_or_else(|| ui.input(|i: &InputState| i.time));
             ui.ctx().request_repaint();
         }
 
@@ -49,7 +49,7 @@ impl FractalClock {
         ui.expand_to_include_rect(painter.clip_rect());
 
         Frame::popup(ui.style())
-            .stroke(Stroke::none())
+            .stroke(Stroke::NONE)
             .show(ui, |ui| {
                 ui.set_max_width(270.0);
                 CollapsingHeader::new("Fractal Clock Settings")
@@ -79,7 +79,7 @@ impl FractalClock {
         ui.add(Slider::new(&mut self.luminance_factor, 0.0..=1.0).text("luminance factor"));
         ui.add(Slider::new(&mut self.width_factor, 0.0..=1.0).text("width factor"));
 
-        egui::reset_button(ui, self);
+        egui::reset_button(ui, self, "Reset");
 
         ui.hyperlink_to(
             "Inspired by a screensaver by Rob Mayoff",

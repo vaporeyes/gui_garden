@@ -1,7 +1,9 @@
 use crate::apps::clock_button;
 use crate::apps::easy_mark;
+use crate::digital_garden::DigitalGarden;
 use eframe::egui;
 use egui::Ui;
+use std::path::PathBuf;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -18,12 +20,15 @@ pub struct TemplateApp {
     clock_is_open: bool,
     events_is_open: bool,
     resume_is_open: bool,
+    digital_garden_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
     #[serde(skip)]
     fractal_clock: crate::apps::FractalClock,
     #[serde(skip)]
     about_me: crate::about::AboutMe,
+    #[serde(skip)]
+    digital_garden: DigitalGarden,
     output_event_history: std::collections::VecDeque<egui::output::OutputEvent>,
 }
 
@@ -38,9 +43,11 @@ impl Default for TemplateApp {
             clock_is_open: true,
             events_is_open: false,
             resume_is_open: false,
+            digital_garden_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
             about_me: Default::default(),
+            digital_garden: DigitalGarden::default(),
             output_event_history: Default::default(),
         }
     }
@@ -71,9 +78,11 @@ impl eframe::App for TemplateApp {
     /// Called each time the UI needs repainting, which may be many times per second.
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        for event in &ctx.output().events {
-            self.output_event_history.push_back(event.clone());
-        }
+        ctx.output(|o| {
+            for event in &o.events {
+                self.output_event_history.push_back(event.clone());
+            }
+        });
         while self.output_event_history.len() > 1000 {
             self.output_event_history.pop_front();
         }
@@ -106,6 +115,9 @@ impl eframe::App for TemplateApp {
                     }
                     if ui.button("Pseudo-Resumé").clicked() {
                         self.resume_is_open = true;
+                    }
+                    if ui.button("Digital Garden").clicked() {
+                        self.digital_garden_is_open = true;
                     }
                     ui.separator();
                     if ui.button("App Events").clicked() {
@@ -146,6 +158,30 @@ impl eframe::App for TemplateApp {
             .open(&mut self.about_is_open)
             .show(ctx, |ui| self.about_me.ui(ui));
 
+        egui::Window::new("Digital Garden")
+            .open(&mut self.digital_garden_is_open)
+            .resizable(true)
+            .default_width(800.0)
+            .default_height(600.0)
+            .show(ctx, |ui| {
+                // If notes directory is not set, show a file picker or allow manual path entry
+                if self.digital_garden.note_directory.is_none() {
+                    ui.heading("Welcome to Digital Garden");
+                    ui.label("Please select a directory containing your markdown notes:");
+                    
+                    if ui.button("Set Example Path").clicked() {
+                        // For demonstration, set to a hardcoded path (you would replace this with a file picker)
+                        let example_path = PathBuf::from("./notes");
+                        if let Err(err) = self.digital_garden.set_notes_directory(&example_path) {
+                            eprintln!("Error setting notes directory: {}", err);
+                        }
+                    }
+                } else {
+                    // Update the digital garden UI
+                    self.digital_garden.update(ctx, _frame);
+                }
+            });
+
         egui::Window::new("📤 Output Events")
             .open(&mut self.events_is_open)
             .resizable(true)
@@ -166,10 +202,6 @@ impl eframe::App for TemplateApp {
             });
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn on_close_event(&mut self) -> bool {
-        true
-    }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {}
 
@@ -177,32 +209,21 @@ impl eframe::App for TemplateApp {
         std::time::Duration::from_secs(30)
     }
 
-    fn max_size_points(&self) -> egui::Vec2 {
-        egui::Vec2::INFINITY
-    }
 
-    fn clear_color(&self, _visuals: &egui::Visuals) -> egui::Rgba {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         // NOTE: a bright gray makes the shadows of the windows look weird.
         // We use a bit of transparency so that if the user switches on the
         // `transparent()` option they get immediate results.
-        egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).into()
+        let c = egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180);
+        let [r, g, b, a] = c.to_array();
+        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0]
 
         // _visuals.window_fill() would also be a natural choice
-    }
-
-    fn persist_native_window(&self) -> bool {
-        true
     }
 
     fn persist_egui_memory(&self) -> bool {
         true
     }
-
-    fn warm_up_enabled(&self) -> bool {
-        false
-    }
-
-    fn post_rendering(&mut self, _window_size_px: [u32; 2], _frame: &eframe::Frame) {}
 }
 
 fn seconds_since_midnight() -> f64 {
@@ -229,7 +250,7 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
 fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
     ui.menu_button("File", |ui| {
         if ui.button("Organize windows").clicked() {
-            ui.ctx().memory().reset_areas();
+            ui.ctx().memory_mut(|mem| mem.reset_areas());
             ui.close_menu();
         }
         if ui
@@ -237,17 +258,17 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
             .on_hover_text("Forget scroll, positions, sizes etc")
             .clicked()
         {
-            *ui.ctx().memory() = Default::default();
+            ui.ctx().memory_mut(|mem| *mem = Default::default());
             ui.close_menu();
         }
         if ui.button("Quit").clicked() {
-            _frame.close();
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     });
 }
 
 pub fn is_mobile(ctx: &egui::Context) -> bool {
-    let screen_size = ctx.input().screen_rect().size();
+    let screen_size = ctx.input(|i| i.screen_rect().size());
     screen_size.x < 550.0
 }
 
