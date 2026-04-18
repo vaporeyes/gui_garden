@@ -1,6 +1,11 @@
 use egui::{Color32, RichText, Ui};
 
-const ORANGE: Color32 = Color32::from_rgb(244, 166, 52);
+use crate::palette;
+
+// Fallback accent when we don't want to burn a clock lookup on every paint.
+// The live operator color comes from `palette::accent_now()` each frame,
+// which lets dawn/dusk subtly retint the operator keys without touching
+// the iOS-familiar neutrals on digits and actions.
 const GRAY: Color32 = Color32::from_rgb(95, 95, 104);
 const DKGRAY: Color32 = Color32::from_rgb(63, 63, 70);
 const WHITE: Color32 = Color32::from_rgb(255, 255, 255);
@@ -87,7 +92,8 @@ impl Calculator {
         let frame = egui::Frame::NONE
             .fill(DISPLAY_BG)
             .inner_margin(egui::Margin::symmetric(14, 10))
-            .corner_radius(egui::CornerRadius::same(6));
+            .corner_radius(egui::CornerRadius::same(6))
+            .stroke(egui::Stroke::new(1.0, palette::accent_now()));
         frame.show(ui, |ui| {
             ui.with_layout(
                 egui::Layout::top_down(egui::Align::RIGHT).with_cross_justify(true),
@@ -434,7 +440,7 @@ fn wide_digit_button(ui: &mut Ui, label: &str, width: f32) -> bool {
 }
 
 fn operator_button(ui: &mut Ui, label: &str) -> bool {
-    styled_button(ui, label, ORANGE, BTN)
+    styled_button(ui, label, palette::accent_now(), BTN)
 }
 
 fn action_button(ui: &mut Ui, label: &str) -> bool {

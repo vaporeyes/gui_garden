@@ -25,7 +25,10 @@ pub struct Folder {
 /// Manages the collection of notes and their relationships
 #[derive(Debug, Clone)]
 pub struct NoteDirectory {
-    /// Path to the root notes directory
+    /// Path to the root notes directory. Stored for future features that
+    /// need to know where the notes live on disk (e.g. a file watcher or
+    /// a "reveal in Finder" action).
+    #[allow(dead_code)]
     pub root_path: PathBuf,
 
     /// All notes, indexed by ID
@@ -66,16 +69,6 @@ impl NoteDirectory {
         self.notes.get(id).cloned()
     }
 
-    /// Get a note by its slug
-    pub fn get_note_by_slug(&self, slug: &str) -> Option<Arc<Note>> {
-        for note in self.notes.values() {
-            if note.slug() == slug {
-                return Some(note.clone());
-            }
-        }
-        None
-    }
-
     /// Resolve a wiki-link query to a canonical note. Tries, in order:
     ///   1. Exact id match (`elegy-campaign-player`).
     ///   2. Case-insensitive id match (`Elegy-Campaign-Player`).
@@ -107,7 +100,24 @@ impl NoteDirectory {
             .collect()
     }
 
-    /// Get all notes with a specific tag
+    /// Map of `tag → count` across every published note. Used by the
+    /// sidebar's tag cloud to size chips by frequency.
+    pub fn tag_frequencies(&self) -> HashMap<String, u32> {
+        let mut out: HashMap<String, u32> = HashMap::new();
+        for note in self.notes.values() {
+            if note.is_draft() {
+                continue;
+            }
+            for tag in &note.frontmatter.tags {
+                *out.entry(tag.clone()).or_insert(0) += 1;
+            }
+        }
+        out
+    }
+
+    /// Get all notes with a specific tag. Ready for the planned tag-browser
+    /// feature (clickable tag chips filter to this list).
+    #[allow(dead_code)]
     pub fn notes_with_tag(&self, tag: &str) -> Vec<Arc<Note>> {
         self.notes
             .values()

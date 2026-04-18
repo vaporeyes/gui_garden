@@ -1,6 +1,8 @@
 use egui::{containers::*, widgets::*, *};
 use std::f32::consts::TAU;
 
+use crate::palette;
+
 #[derive(PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -154,6 +156,14 @@ impl FractalClock {
 
         let mut width = self.start_line_width;
 
+        // Poline-derived palette across fractal depth. The main hands stay
+        // a bright neutral so they read as "the clock", and each deeper
+        // fractal level fades through a harmonic arc between today's two
+        // anchor hues — dawn peach → amber, dusk violet → teal, etc.
+        let (anchor_a, anchor_b) = palette::anchors_for_now();
+        let depth_colors =
+            palette::interpolate(anchor_a, anchor_b, self.depth.max(1), palette::Curve::Sinusoidal);
+
         for (i, hand) in hands.iter().enumerate() {
             let center = pos2(0.0, 0.0);
             let end = center + hand.vec;
@@ -169,17 +179,25 @@ impl FractalClock {
         let mut luminance = 0.7; // Start dimmer than main hands
 
         let mut new_nodes = Vec::new();
-        for _ in 0..self.depth {
+        for depth_idx in 0..self.depth {
             new_nodes.clear();
             new_nodes.reserve(nodes.len() * 2);
 
             luminance *= self.luminance_factor;
             width *= self.width_factor;
 
-            let luminance_u8 = (255.0 * luminance).round() as u8;
-            if luminance_u8 == 0 {
+            let luminance_f = luminance.clamp(0.0, 1.0);
+            if (luminance_f * 255.0).round() as u8 == 0 {
                 break;
             }
+
+            // Modulate the palette color by the fading luminance so deep
+            // branches dim gracefully instead of staying saturated.
+            let base = depth_colors
+                .get(depth_idx.min(depth_colors.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(Color32::WHITE);
+            let color = modulate_luminance(base, luminance_f);
 
             for &rotor in &hand_rotors {
                 for a in &nodes {
@@ -188,11 +206,7 @@ impl FractalClock {
                         pos: a.pos + new_dir,
                         dir: new_dir,
                     };
-                    paint_line(
-                        [a.pos, b.pos],
-                        Color32::from_additive_luminance(luminance_u8),
-                        width,
-                    );
+                    paint_line([a.pos, b.pos], color, width);
                     new_nodes.push(b);
                 }
             }
@@ -202,6 +216,17 @@ impl FractalClock {
         self.line_count = shapes.len();
         painter.extend(shapes);
     }
+}
+
+/// Multiply a color's RGB by the given factor, clamped to 0..1. Used by
+/// the fractal clock so deeper recursion fades to black while keeping hue.
+fn modulate_luminance(c: Color32, factor: f32) -> Color32 {
+    let f = factor.clamp(0.0, 1.0);
+    Color32::from_rgb(
+        (c.r() as f32 * f).round() as u8,
+        (c.g() as f32 * f).round() as u8,
+        (c.b() as f32 * f).round() as u8,
+    )
 }
 
 pub fn clock_button(ui: &mut egui::Ui, seconds_since_midnight: f64) -> egui::Response {

@@ -1,14 +1,16 @@
-use super::note::Note;
 use super::note_directory::NoteDirectory;
-use egui::{Color32, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2};
+use crate::palette;
+use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use std::collections::{HashMap, HashSet};
 use std::ops::AddAssign;
-use std::sync::Arc;
 
 /// Node in the graph
 #[derive(Clone, Debug)]
 pub struct GraphNode {
-    /// ID of the note
+    /// ID of the note. Preserved as the canonical identity of the node even
+    /// though the current minimal renderer doesn't read it directly —
+    /// clicking a node still returns `connections` info keyed by id.
+    #[allow(dead_code)]
     pub id: String,
 
     /// Title to display
@@ -43,7 +45,22 @@ pub struct GraphView {
 
     /// Previous mouse position for dragging
     pub prev_mouse_pos: Option<Pos2>,
+
+    /// Remaining Fruchterman-Reingold iterations to run. Decremented by
+    /// one per frame in `ui()` so the layout visibly settles instead of
+    /// snapping into place at build time.
+    layout_iters_remaining: usize,
+
+    /// Current temperature. Cooled by `LAYOUT_COOLING` on every step.
+    layout_temperature: f32,
+
+    /// Ideal edge length derived from the graph area + node count.
+    layout_k: f32,
 }
+
+const LAYOUT_AREA: f32 = 1_000_000.0;
+const LAYOUT_TOTAL_ITERS: usize = 150;
+const LAYOUT_COOLING: f32 = 0.95;
 
 impl Default for GraphView {
     fn default() -> Self {
@@ -55,6 +72,9 @@ impl Default for GraphView {
             scale: 1.0,
             dragging: false,
             prev_mouse_pos: None,
+            layout_iters_remaining: 0,
+            layout_temperature: 0.0,
+            layout_k: 0.0,
         }
     }
 }
@@ -65,99 +85,145 @@ impl GraphView {
         Self::default()
     }
 
-    /// Build the graph from a note directory
+    /// Build the graph from scratch — drops all existing nodes and seeds
+    /// every position fresh. Used on initial directory load.
     pub fn build_graph(&mut self, note_directory: &NoteDirectory) {
         self.nodes.clear();
+        self.refresh_from_directory(note_directory);
+    }
 
-        // Create nodes for all published notes
+    /// Rebuild node data from the directory while preserving positions
+    /// of nodes that already existed. Used by hot-reload: a content-only
+    /// edit to an existing note shouldn't yank every node back to a random
+    /// position and re-run 150 FR iterations.
+    ///
+    /// Link targets are canonicalized via `resolve_link` so wiki-links
+    /// written in title or slug form correctly contribute edges.
+    pub fn refresh_from_directory(&mut self, note_directory: &NoteDirectory) {
+        // Snapshot current positions before rebuilding.
+        let old_positions: HashMap<String, Vec2> = self
+            .nodes
+            .iter()
+            .map(|(id, n)| (id.clone(), n.pos))
+            .collect();
+        let old_ids: HashSet<String> = old_positions.keys().cloned().collect();
+
+        self.nodes.clear();
+
         for note in note_directory.published_notes() {
             let connections: HashSet<String> = note
                 .links
                 .iter()
-                .map(|link| link.target_id.clone())
+                .filter_map(|link| {
+                    note_directory
+                        .resolve_link(&link.target_id)
+                        .map(|n| n.id.clone())
+                })
                 .collect();
+
+            // Reuse the old position for returning ids; drop newcomers at
+            // random near the origin.
+            let pos = old_positions
+                .get(&note.id)
+                .copied()
+                .unwrap_or_else(random_position);
 
             self.nodes.insert(
                 note.id.clone(),
                 GraphNode {
                     id: note.id.clone(),
                     title: note.title(),
-                    pos: random_position(), // Random initial position
+                    pos,
                     connections,
                 },
             );
         }
 
-        // Run a simple force-directed layout algorithm
-        self.layout_graph();
-    }
-
-    /// Update the graph with a simple force-directed layout
-    pub fn layout_graph(&mut self) {
-        // Simple layout algorithm - in a real implementation, we'd use a more sophisticated approach
-        const REPULSION: f32 = 500.0;
-        const ATTRACTION: f32 = 0.05;
-        const MAX_ITERATIONS: usize = 100;
-
-        // Copy node IDs for iteration
-        let node_ids: Vec<String> = self.nodes.keys().cloned().collect();
-
-        // Run layout iterations
-        for _ in 0..MAX_ITERATIONS {
-            // Calculate forces
-            let mut forces: HashMap<String, Vec2> = HashMap::new();
-
-            // Repulsive forces between all nodes
-            for i in 0..node_ids.len() {
-                let node_id_1 = &node_ids[i];
-                let node_1 = &self.nodes[node_id_1];
-
-                for j in i + 1..node_ids.len() {
-                    let node_id_2 = &node_ids[j];
-                    let node_2 = &self.nodes[node_id_2];
-
-                    let delta = node_1.pos - node_2.pos;
-                    let distance = delta.length().max(0.1); // Avoid division by zero
-                    let force = delta.normalized() * REPULSION / distance.powi(2);
-
-                    forces
-                        .entry(node_id_1.clone())
-                        .or_insert_with(|| Vec2::ZERO)
-                        .add_assign(force);
-
-                    forces
-                        .entry(node_id_2.clone())
-                        .or_insert_with(|| Vec2::ZERO)
-                        .add_assign(-force);
-                }
-            }
-
-            // Attractive forces along edges
-            for (node_id, node) in &self.nodes {
-                for conn_id in &node.connections {
-                    if let Some(conn_node) = self.nodes.get(conn_id) {
-                        let delta = conn_node.pos - node.pos;
-                        let force = delta * ATTRACTION;
-
-                        forces
-                            .entry(node_id.clone())
-                            .or_insert_with(|| Vec2::ZERO)
-                            .add_assign(force);
-                    }
-                }
-            }
-
-            // Apply forces to update positions
-            for (node_id, force) in forces {
-                if let Some(node) = self.nodes.get_mut(&node_id) {
-                    node.pos += force;
-                }
-            }
+        // Only re-layout when the *set* of ids changed. A content-only
+        // edit (same ids, possibly new link targets) leaves nodes where
+        // the user has already arranged them.
+        let new_ids: HashSet<String> = self.nodes.keys().cloned().collect();
+        if new_ids != old_ids && self.nodes.len() >= 2 {
+            self.layout_k = (LAYOUT_AREA / self.nodes.len() as f32).sqrt();
+            self.layout_temperature = LAYOUT_AREA.sqrt() / 10.0;
+            self.layout_iters_remaining = LAYOUT_TOTAL_ITERS;
         }
     }
 
-    /// Show the graph view
+    /// Advance one Fruchterman-Reingold iteration. Returns `true` if more
+    /// iterations remain after this call (the caller should `request_repaint`).
+    fn layout_step(&mut self) -> bool {
+        if self.layout_iters_remaining == 0 || self.nodes.len() < 2 {
+            return false;
+        }
+        let k = self.layout_k;
+        let temperature = self.layout_temperature;
+        let ids: Vec<String> = self.nodes.keys().cloned().collect();
+
+        let mut disp: HashMap<String, Vec2> =
+            ids.iter().map(|id| (id.clone(), Vec2::ZERO)).collect();
+
+        // Pairwise repulsion: f_r(d) = k² / d, along (u - v).
+        for i in 0..ids.len() {
+            for j in i + 1..ids.len() {
+                let pi = self.nodes[&ids[i]].pos;
+                let pj = self.nodes[&ids[j]].pos;
+                let delta = pi - pj;
+                let dist = delta.length().max(0.01);
+                let magnitude = (k * k) / dist;
+                let force = delta.normalized() * magnitude;
+                disp.get_mut(&ids[i]).unwrap().add_assign(force);
+                disp.get_mut(&ids[j]).unwrap().add_assign(-force);
+            }
+        }
+
+        // Edge attraction: f_a(d) = d² / k, pulling endpoints together.
+        for id in &ids {
+            let node = &self.nodes[id];
+            for conn in &node.connections {
+                if conn == id {
+                    continue;
+                }
+                let Some(other) = self.nodes.get(conn) else {
+                    continue;
+                };
+                let delta = node.pos - other.pos;
+                let dist = delta.length().max(0.01);
+                let magnitude = (dist * dist) / k;
+                let force = delta.normalized() * magnitude;
+                disp.get_mut(id).unwrap().add_assign(-force);
+                if let Some(d) = disp.get_mut(conn) {
+                    d.add_assign(force);
+                }
+            }
+        }
+
+        // Clamp each displacement by the current temperature.
+        for id in &ids {
+            let d = disp[id];
+            let dist = d.length();
+            if dist > 0.0 {
+                let scale = dist.min(temperature) / dist;
+                self.nodes.get_mut(id).unwrap().pos += d * scale;
+            }
+        }
+
+        self.layout_temperature *= LAYOUT_COOLING;
+        self.layout_iters_remaining -= 1;
+        self.layout_iters_remaining > 0
+    }
+
+    /// Show the graph view. `_note_directory` is reserved for future use
+    /// (e.g. hovering a node to preview its title / tags); the current
+    /// renderer works purely from `self.nodes` which was already populated
+    /// from the directory at build time.
     pub fn ui(&mut self, ui: &mut Ui, note_directory: &NoteDirectory) -> Option<String> {
+        // Run one FR iteration per frame until the queue drains. Keeps the
+        // UI responsive and lets the user watch the graph relax into shape.
+        if self.layout_step() {
+            ui.ctx().request_repaint();
+        }
+
         let available_rect = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(available_rect, Sense::click_and_drag());
 
@@ -243,11 +309,13 @@ impl GraphView {
                 Vec2::new(node_radius * 2.0, node_radius * 2.0),
             );
 
+            let accent = palette::accent_now();
             let is_selected = self.selected_node.as_ref() == Some(node_id);
             let node_color = if is_selected {
-                Color32::from_rgb(255, 200, 0)
+                accent
             } else {
-                Color32::from_rgb(100, 150, 250)
+                // Deeper/dimmer version of the accent for unselected nodes.
+                accent.linear_multiply(0.55)
             };
 
             shapes.push(Shape::circle_filled(
@@ -263,27 +331,73 @@ impl GraphView {
             {
                 self.hovered_node = Some(node_id.clone());
 
-                // Draw label on hover
-                let font_id = egui::FontId::proportional(14.0);
-                let galley =
-                    ui.painter()
-                        .layout_no_wrap(node.title.clone(), font_id, Color32::WHITE);
+                // Preview card: title in accent, followed by the first
+                // ~160 chars of the note body, wrapped to a reasonable
+                // width. Previously we showed only a one-line title —
+                // this turns hover into an actual at-a-glance preview.
+                let title_font = egui::FontId::proportional(14.0);
+                let body_font = egui::FontId::proportional(11.0);
+                let preview_text = note_directory
+                    .get_note(node_id)
+                    .map(|n| first_paragraph(&n.content, 160))
+                    .unwrap_or_default();
 
-                let label_rect = Rect::from_min_size(
-                    Pos2::new(
-                        node_pos.x - galley.size().x / 2.0,
-                        node_pos.y - node_radius - galley.size().y - 4.0,
-                    ),
-                    galley.size(),
+                let accent = palette::accent_now();
+                let title_galley = ui.painter().layout_no_wrap(
+                    node.title.clone(),
+                    title_font,
+                    accent,
                 );
+                let max_width = (title_galley.size().x + 40.0).max(240.0);
+                let body_galley = if preview_text.is_empty() {
+                    None
+                } else {
+                    Some(ui.painter().layout(
+                        preview_text,
+                        body_font,
+                        Color32::from_rgb(220, 220, 220),
+                        max_width,
+                    ))
+                };
 
+                let body_h = body_galley
+                    .as_ref()
+                    .map(|g| g.size().y + 6.0)
+                    .unwrap_or(0.0);
+                let card_size = egui::vec2(
+                    max_width + 12.0,
+                    title_galley.size().y + body_h + 12.0,
+                );
+                let card_rect = Rect::from_min_size(
+                    Pos2::new(
+                        node_pos.x - card_size.x / 2.0,
+                        node_pos.y - node_radius - card_size.y - 6.0,
+                    ),
+                    card_size,
+                );
                 shapes.push(Shape::rect_filled(
-                    label_rect.expand(4.0),
+                    card_rect,
                     4.0,
-                    Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+                    Color32::from_rgba_unmultiplied(0, 0, 0, 220),
                 ));
-
-                shapes.push(Shape::galley(label_rect.min, galley, Color32::WHITE));
+                shapes.push(Shape::rect_stroke(
+                    card_rect,
+                    4.0,
+                    Stroke::new(1.0, accent.linear_multiply(0.5)),
+                    egui::StrokeKind::Outside,
+                ));
+                shapes.push(Shape::galley(
+                    card_rect.min + egui::vec2(6.0, 6.0),
+                    title_galley,
+                    accent,
+                ));
+                if let Some(g) = body_galley {
+                    shapes.push(Shape::galley(
+                        card_rect.min + egui::vec2(6.0, 6.0 + body_h - g.size().y),
+                        g,
+                        Color32::from_rgb(220, 220, 220),
+                    ));
+                }
 
                 // Check for click
                 if response.clicked() && node_rect.contains(response.hover_pos().unwrap()) {
@@ -305,4 +419,79 @@ fn random_position() -> Vec2 {
     let x = (rand::random::<f32>() - 0.5) * 400.0;
     let y = (rand::random::<f32>() - 0.5) * 400.0;
     Vec2::new(x, y)
+}
+
+/// Pull the first non-frontmatter paragraph from a markdown string, up to
+/// `max_chars`. Used by the graph's hover preview. Skips YAML frontmatter
+/// and any leading blank lines, and trims trailing whitespace / `…` so the
+/// preview reads cleanly.
+fn first_paragraph(content: &str, max_chars: usize) -> String {
+    // Skip YAML frontmatter block if present.
+    let body = if let Some(stripped) = content.strip_prefix("---\n") {
+        stripped
+            .find("\n---\n")
+            .or_else(|| stripped.find("\n---\r\n"))
+            .map(|end| &stripped[end + 5..])
+            .unwrap_or(content)
+    } else {
+        content
+    };
+
+    let mut out = String::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !out.is_empty() {
+                break; // blank line after content → paragraph end
+            }
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(trimmed);
+        if out.chars().count() >= max_chars {
+            break;
+        }
+    }
+    // Clamp to max_chars on char boundary, appending an ellipsis if we cut.
+    if out.chars().count() > max_chars {
+        let truncated: String = out.chars().take(max_chars).collect();
+        format!("{}…", truncated.trim_end())
+    } else {
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_paragraph_strips_frontmatter() {
+        let content = "---\ntitle: X\n---\n\nHello world.\n\nSecond paragraph.";
+        assert_eq!(first_paragraph(content, 200), "Hello world.");
+    }
+
+    #[test]
+    fn first_paragraph_truncates_long_content() {
+        let content = "x".repeat(500);
+        let preview = first_paragraph(&content, 50);
+        assert!(preview.chars().count() <= 51); // 50 + ellipsis
+        assert!(preview.ends_with('…'));
+    }
+
+    #[test]
+    fn first_paragraph_handles_no_frontmatter() {
+        assert_eq!(first_paragraph("Just a line.", 200), "Just a line.");
+    }
+
+    #[test]
+    fn first_paragraph_joins_wrapped_lines_within_paragraph() {
+        let content = "wrapped line one\nwrapped line two\n\nsecond para";
+        assert_eq!(
+            first_paragraph(content, 200),
+            "wrapped line one wrapped line two"
+        );
+    }
 }

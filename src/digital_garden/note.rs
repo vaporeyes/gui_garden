@@ -9,6 +9,10 @@ pub struct Frontmatter {
     /// Title of the note
     pub title: Option<String>,
 
+    /// Short summary / deck line. Astro posts use this as `description` in
+    /// their frontmatter; we surface it under the title when present.
+    pub description: Option<String>,
+
     /// Custom slug for the note URL
     pub slug: Option<String>,
 

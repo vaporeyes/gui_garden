@@ -8,14 +8,19 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let native_options = eframe::NativeOptions::default();
-    eframe::run_native(
+    if let Err(err) = eframe::run_native(
         "digital garden",
         native_options,
         Box::new(|cc| Ok(Box::new(digital_garden::TemplateApp::new(cc)))),
-    );
+    ) {
+        eprintln!("digital garden exited with error: {err}");
+    }
 }
 
-// when compiling to web using trunk.
+// when compiling to web using trunk. eframe 0.31 replaced the sync
+// `start_web` API with `WebRunner` + an async `start` that attaches to
+// an `HtmlCanvasElement`. Spawn it and log any startup failure to the
+// browser console.
 #[cfg(target_arch = "wasm32")]
 fn main() {
     // Make sure panics are logged using `console.error`.
@@ -24,11 +29,28 @@ fn main() {
     // Redirect tracing to console.log and friends:
     tracing_wasm::set_as_global_default();
 
-    let web_options = eframe::WebOptions::default();
-    eframe::start_web(
-        "the_canvas_id", // hardcode it
-        web_options,
-        Box::new(|cc| Box::new(digital_garden::TemplateApp::new(cc))),
-    )
-    .expect("Failed to start digital garden");
+    use wasm_bindgen::JsCast;
+
+    wasm_bindgen_futures::spawn_local(async {
+        let document = web_sys::window()
+            .and_then(|w| w.document())
+            .expect("no document");
+        let canvas = document
+            .get_element_by_id("the_canvas_id")
+            .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            .expect("canvas #the_canvas_id not found");
+
+        let start_result = eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|cc| Ok(Box::new(digital_garden::TemplateApp::new(cc)))),
+            )
+            .await;
+        if let Err(err) = start_result {
+            web_sys::console::error_1(
+                &format!("Failed to start digital garden: {err:?}").into(),
+            );
+        }
+    });
 }

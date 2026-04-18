@@ -40,12 +40,28 @@ impl History {
         self.position = 0;
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     pub fn current(&self) -> Option<&str> {
         self.entries.get(self.position).map(|s| s.as_str())
+    }
+
+    /// The `n` most recently visited distinct ids, most-recent first,
+    /// excluding the current entry. Used by the sidebar's "Recent" section.
+    pub fn recent(&self, n: usize) -> Vec<String> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        if let Some(cur) = self.current() {
+            seen.insert(cur);
+        }
+        let mut out: Vec<String> = Vec::with_capacity(n);
+        // Walk backwards from the cursor through the history timeline.
+        for id in self.entries[..self.position].iter().rev() {
+            if seen.insert(id.as_str()) {
+                out.push(id.clone());
+                if out.len() >= n {
+                    break;
+                }
+            }
+        }
+        out
     }
 
     pub fn can_go_back(&self) -> bool {
@@ -106,7 +122,7 @@ mod tests {
     #[test]
     fn empty_history_has_nowhere_to_go() {
         let mut h = History::new();
-        assert!(h.is_empty());
+        assert!(h.current().is_none());
         assert!(!h.can_go_back());
         assert!(!h.can_go_forward());
         // Regression: original `navigate_forward` did `len() - 1` and
@@ -189,6 +205,29 @@ mod tests {
             back_count += 1;
         }
         assert_eq!(back_count, HISTORY_CAP - 1);
+    }
+
+    #[test]
+    fn recent_returns_distinct_most_recent_first_excluding_current() {
+        let mut h = History::new();
+        h.push("a".into());
+        h.push("b".into());
+        h.push("c".into());
+        h.push("a".into()); // revisit
+        h.push("d".into());
+        // Cursor is at d. Recent should be [a, c, b] — distinct, newest first,
+        // excluding d (current). 'a' appears once even though it was visited twice.
+        let r = h.recent(5);
+        assert_eq!(r, vec!["a".to_string(), "c".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn recent_respects_cap() {
+        let mut h = History::new();
+        for i in 0..10 {
+            h.push(format!("n{}", i));
+        }
+        assert_eq!(h.recent(3).len(), 3);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use egui::{Color32, Context, Rgba, Rounding, Stroke, Style, Visuals};
+use egui::{Color32, Context, Rgba, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
 
 /// Theme configuration
@@ -123,14 +123,18 @@ impl ThemeManager {
         Self::default()
     }
     
-    /// Set the themes directory
+    /// Set the themes directory. Part of a disk-based theme loading feature
+    /// that is implemented but not yet wired up to the app UI; kept so
+    /// `set_theme`'s JSON fallback remains reachable when it is.
+    #[allow(dead_code)]
     pub fn set_themes_directory<P: AsRef<Path>>(&mut self, path: P) {
         let path_str = path.as_ref().to_string_lossy().to_string();
         self.themes_dir = Some(path_str);
         self.load_available_themes();
     }
-    
-    /// Load available themes from the themes directory
+
+    /// Load available themes from the themes directory.
+    #[allow(dead_code)]
     pub fn load_available_themes(&mut self) {
         // Start with predefined themes
         let default_themes = get_default_themes();

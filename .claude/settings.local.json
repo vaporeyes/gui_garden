@@ -6,7 +6,14 @@
       "Bash(/opt/homebrew/bin/rg \"^error|^\\\\s+--> .*\\\\.rs\")",
       "Bash(~/.cargo/bin/cargo build *)",
       "Bash(~/.cargo/bin/cargo test *)",
-      "Bash(/opt/homebrew/bin/rg \"^error\" -A 8)"
+      "Bash(/opt/homebrew/bin/rg \"^error\" -A 8)",
+      "Bash(~/.cargo/bin/cargo metadata *)",
+      "Bash(/opt/homebrew/bin/rg -o '\"name\":\"[^\"]+\"|\"version\":\"[^\"]+\"')",
+      "Bash(~/.cargo/bin/cargo clean *)",
+      "Bash(/opt/homebrew/bin/rg \"^error\" -A 6)",
+      "Bash(/opt/homebrew/bin/rg \"^error|^warning:\" -A 3)",
+      "Bash(/opt/homebrew/bin/rg \"^error\" -A 5)",
+      "Bash(/opt/homebrew/bin/rg \"^error\" -A 4)"
     ]
   }
 }
