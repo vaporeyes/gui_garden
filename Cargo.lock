@@ -887,6 +887,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "ehttp",
  "getrandom 0.2.15",
  "image",
  "notify",

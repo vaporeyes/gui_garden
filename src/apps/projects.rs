@@ -1,10 +1,61 @@
 // Projects catalog, ported from the astro-blog's `src/data/projects.ts`.
-// Single source of truth for the projects window — edit the slice below
-// to add or rearrange entries.
+// The const slice below is the offline fallback / seed data; the
+// "Fetch from josh.bot" button replaces it with the live list from the
+// deployed API so the garden stays in sync with the site.
 
 use egui::{Color32, RichText, Ui};
+use serde::Deserialize;
+use std::sync::{Arc, Mutex};
 
 use crate::palette;
+
+/// Remote projects endpoint. Expected to return a JSON array of
+/// `{name, url, description, stack}` records matching the fallback schema.
+const PROJECTS_REMOTE_URL: &str = "https://josh.bot/api/projects";
+
+#[derive(Debug, Deserialize, Clone)]
+struct RemoteProject {
+    name: String,
+    url: Option<String>,
+    description: String,
+    #[serde(default)]
+    stack: Vec<String>,
+}
+
+/// Display record — static entries come from the const slice, remote
+/// entries come from the josh.bot API. The two differ in string
+/// ownership, which we bridge with an enum at render time.
+enum ProjectRef<'a> {
+    Static(&'a Project),
+    Remote(&'a RemoteProject),
+}
+
+impl<'a> ProjectRef<'a> {
+    fn name(&self) -> &str {
+        match self {
+            ProjectRef::Static(p) => p.name,
+            ProjectRef::Remote(p) => p.name.as_str(),
+        }
+    }
+    fn url(&self) -> Option<&str> {
+        match self {
+            ProjectRef::Static(p) => p.url,
+            ProjectRef::Remote(p) => p.url.as_deref(),
+        }
+    }
+    fn description(&self) -> &str {
+        match self {
+            ProjectRef::Static(p) => p.description,
+            ProjectRef::Remote(p) => p.description.as_str(),
+        }
+    }
+    fn stack(&self) -> Vec<String> {
+        match self {
+            ProjectRef::Static(p) => p.stack.iter().map(|s| s.to_string()).collect(),
+            ProjectRef::Remote(p) => p.stack.clone(),
+        }
+    }
+}
 
 struct Project {
     name: &'static str,
@@ -147,13 +198,23 @@ const PROJECTS: &[Project] = &[
     },
 ];
 
-#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
-#[cfg_attr(feature = "serde", serde(default))]
 pub struct Projects {
-    #[cfg_attr(feature = "serde", serde(skip))]
     stack_filter: Option<String>,
-    #[cfg_attr(feature = "serde", serde(skip))]
     query: String,
+    /// Optional remote override — when Some, rendered instead of the const
+    /// fallback. Replaced by the successful response of a "fetch" click.
+    remote: Option<Vec<RemoteProject>>,
+    /// Shared state with the ehttp callback thread.
+    remote_in_flight: Arc<Mutex<RemoteProjectsFetch>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Default)]
+enum RemoteProjectsFetch {
+    #[default]
+    Idle,
+    Pending,
+    Ready(Result<Vec<RemoteProject>, String>),
 }
 
 impl Default for Projects {
@@ -161,6 +222,9 @@ impl Default for Projects {
         Self {
             stack_filter: None,
             query: String::new(),
+            remote: None,
+            remote_in_flight: Arc::new(Mutex::new(RemoteProjectsFetch::Idle)),
+            error: None,
         }
     }
 }
@@ -169,6 +233,13 @@ impl Projects {
     pub fn ui(&mut self, ui: &mut Ui) {
         let accent = palette::accent_now();
         let muted = ui.visuals().weak_text_color();
+
+        // Drain completed fetch.
+        self.drain_remote_fetch();
+        let fetch_pending = matches!(
+            *self.remote_in_flight.lock().unwrap(),
+            RemoteProjectsFetch::Pending
+        );
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -179,6 +250,31 @@ impl Projects {
                     .hint_text("filter projects by name or description"),
             );
         });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let label = if fetch_pending {
+                "⟳ Fetching…"
+            } else {
+                "☁ Fetch from josh.bot"
+            };
+            if ui
+                .add_enabled(!fetch_pending, egui::Button::new(label))
+                .on_hover_text(PROJECTS_REMOTE_URL)
+                .clicked()
+            {
+                let ctx = ui.ctx().clone();
+                self.start_remote_fetch(&ctx);
+            }
+            if self.remote.is_some() {
+                ui.label(RichText::new("(live from API)").small().weak());
+                if ui.small_button("use local").clicked() {
+                    self.remote = None;
+                }
+            }
+        });
+        if let Some(err) = &self.error {
+            ui.colored_label(Color32::from_rgb(220, 80, 80), err);
+        }
         if let Some(stack) = self.stack_filter.clone() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -196,16 +292,20 @@ impl Projects {
         ui.separator();
 
         let q = self.query.to_lowercase();
-        let matches: Vec<&Project> = PROJECTS
-            .iter()
+        let stack_filter = self.stack_filter.clone();
+        let refs: Vec<ProjectRef<'_>> = match self.remote.as_ref() {
+            Some(remote) => remote.iter().map(ProjectRef::Remote).collect(),
+            None => PROJECTS.iter().map(ProjectRef::Static).collect(),
+        };
+        let matches: Vec<ProjectRef<'_>> = refs
+            .into_iter()
             .filter(|p| {
                 let text_match = q.is_empty()
-                    || p.name.to_lowercase().contains(&q)
-                    || p.description.to_lowercase().contains(&q);
-                let stack_match = self
-                    .stack_filter
+                    || p.name().to_lowercase().contains(&q)
+                    || p.description().to_lowercase().contains(&q);
+                let stack_match = stack_filter
                     .as_deref()
-                    .map(|f| p.stack.iter().any(|s| s == &f))
+                    .map(|f| p.stack().iter().any(|s| s == f))
                     .unwrap_or(true);
                 text_match && stack_match
             })
@@ -240,11 +340,54 @@ impl Projects {
             self.stack_filter = Some(f);
         }
     }
+
+    fn start_remote_fetch(&mut self, ctx: &egui::Context) {
+        {
+            let mut state = self.remote_in_flight.lock().unwrap();
+            if matches!(*state, RemoteProjectsFetch::Pending) {
+                return;
+            }
+            *state = RemoteProjectsFetch::Pending;
+        }
+        let store = self.remote_in_flight.clone();
+        let ctx = ctx.clone();
+        let request = ehttp::Request::get(PROJECTS_REMOTE_URL);
+        ehttp::fetch(request, move |result| {
+            let parsed: Result<Vec<RemoteProject>, String> = result
+                .map_err(|e| e.to_string())
+                .and_then(|response| {
+                    serde_json::from_slice::<Vec<RemoteProject>>(&response.bytes)
+                        .map_err(|e| format!("parse error: {}", e))
+                });
+            *store.lock().unwrap() = RemoteProjectsFetch::Ready(parsed);
+            ctx.request_repaint();
+        });
+    }
+
+    fn drain_remote_fetch(&mut self) {
+        let taken = {
+            let mut state = self.remote_in_flight.lock().unwrap();
+            if matches!(*state, RemoteProjectsFetch::Ready(_)) {
+                Some(std::mem::take(&mut *state))
+            } else {
+                None
+            }
+        };
+        if let Some(RemoteProjectsFetch::Ready(result)) = taken {
+            match result {
+                Ok(projects) => {
+                    self.remote = Some(projects);
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(format!("fetch failed: {}", e)),
+            }
+        }
+    }
 }
 
 fn render_project(
     ui: &mut Ui,
-    project: &Project,
+    project: &ProjectRef<'_>,
     accent: Color32,
     muted: Color32,
     new_filter: &mut Option<String>,
@@ -255,8 +398,11 @@ fn render_project(
         .corner_radius(egui::CornerRadius::same(6))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                let name = RichText::new(project.name).size(16.0).strong().color(accent);
-                match project.url {
+                let name = RichText::new(project.name())
+                    .size(16.0)
+                    .strong()
+                    .color(accent);
+                match project.url() {
                     Some(url) => {
                         ui.hyperlink_to(name, url);
                     }
@@ -266,12 +412,12 @@ fn render_project(
                 }
             });
             ui.add_space(2.0);
-            ui.label(RichText::new(project.description).color(muted));
+            ui.label(RichText::new(project.description()).color(muted));
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                for tag in project.stack {
-                    let chip = RichText::new(*tag)
+                for tag in project.stack() {
+                    let chip = RichText::new(tag.clone())
                         .small()
                         .color(accent)
                         .background_color(accent.linear_multiply(0.15));
@@ -280,7 +426,7 @@ fn render_project(
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text(format!("Filter by {}", tag));
                     if resp.clicked() {
-                        *new_filter = Some((*tag).to_string());
+                        *new_filter = Some(tag.clone());
                     }
                 }
             });

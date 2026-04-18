@@ -18,6 +18,7 @@ pub struct TemplateApp {
     canvas_is_open: bool,
     workouts_is_open: bool,
     binary_clock_is_open: bool,
+    collections_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
     #[serde(skip)]
@@ -32,6 +33,8 @@ pub struct TemplateApp {
     canvas_view: crate::apps::CanvasView,
     #[serde(skip)]
     workouts: crate::apps::Workouts,
+    #[serde(skip)]
+    collections: crate::apps::Collections,
     /// DigitalGarden's runtime state is all `#[serde(skip)]` internally; the
     /// only field that persists is user preferences like the hot-reload
     /// debounce window, which survive restarts.
@@ -63,6 +66,7 @@ impl Default for TemplateApp {
             canvas_is_open: false,
             workouts_is_open: false,
             binary_clock_is_open: false,
+            collections_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
             binary_clock: Default::default(),
@@ -70,6 +74,7 @@ impl Default for TemplateApp {
             projects: Default::default(),
             canvas_view: Default::default(),
             workouts: Default::default(),
+            collections: Default::default(),
             digital_garden: DigitalGarden::default(),
             notes_directory_path: String::new(),
             workouts_path: String::new(),
@@ -218,6 +223,12 @@ impl eframe::App for TemplateApp {
                     {
                         self.workouts_is_open = true;
                     }
+                    if ui
+                        .selectable_label(self.collections_is_open, "Collections")
+                        .clicked()
+                    {
+                        self.collections_is_open = true;
+                    }
 
                     sidebar_section(ui, "notes", accent);
                     if ui
@@ -323,6 +334,12 @@ impl eframe::App for TemplateApp {
             .default_width(900.0)
             .default_height(420.0)
             .show(ctx, |ui| self.workouts.ui(ui));
+
+        egui::Window::new("Collections")
+            .open(&mut self.collections_is_open)
+            .default_width(720.0)
+            .default_height(640.0)
+            .show(ctx, |ui| self.collections.ui(ui));
         if let Some(p) = self.workouts.loaded_path() {
             let s = p.to_string_lossy().to_string();
             if s != self.workouts_path {
