@@ -5,10 +5,12 @@
 // canvas schema verbatim so any canvas authored there or in Obsidian can
 // be dropped in.
 
-use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
+use egui::epaint::CubicBezierShape;
+use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, UiBuilder, Vec2};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::digital_garden::NoteDirectory;
 use crate::palette;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -50,6 +52,12 @@ pub struct CanvasEdge {
     pub from_node_alt: Option<String>,
     #[serde(rename = "toNode")]
     pub to_node_alt: Option<String>,
+    pub from_side: Option<String>,
+    pub to_side: Option<String>,
+    #[serde(rename = "fromSide")]
+    pub from_side_alt: Option<String>,
+    #[serde(rename = "toSide")]
+    pub to_side_alt: Option<String>,
     /// Edge label; reserved for a future hover affordance.
     #[allow(dead_code)]
     pub label: Option<String>,
@@ -63,6 +71,56 @@ impl CanvasEdge {
     }
     fn to(&self) -> Option<&str> {
         self.to_node.as_deref().or(self.to_node_alt.as_deref())
+    }
+    fn from_side_resolved(&self) -> Option<Side> {
+        Side::parse(
+            self.from_side
+                .as_deref()
+                .or(self.from_side_alt.as_deref()),
+        )
+    }
+    fn to_side_resolved(&self) -> Option<Side> {
+        Side::parse(self.to_side.as_deref().or(self.to_side_alt.as_deref()))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+impl Side {
+    fn parse(s: Option<&str>) -> Option<Self> {
+        match s? {
+            "top" => Some(Side::Top),
+            "right" => Some(Side::Right),
+            "bottom" => Some(Side::Bottom),
+            "left" => Some(Side::Left),
+            _ => None,
+        }
+    }
+
+    /// Unit vector pointing *outward* from the node on this side.
+    fn outward(self) -> Vec2 {
+        match self {
+            Side::Top => Vec2::new(0.0, -1.0),
+            Side::Right => Vec2::new(1.0, 0.0),
+            Side::Bottom => Vec2::new(0.0, 1.0),
+            Side::Left => Vec2::new(-1.0, 0.0),
+        }
+    }
+
+    /// Point on the given rect where an edge with this side should attach.
+    fn anchor(self, rect: Rect) -> Pos2 {
+        match self {
+            Side::Top => Pos2::new(rect.center().x, rect.top()),
+            Side::Right => Pos2::new(rect.right(), rect.center().y),
+            Side::Bottom => Pos2::new(rect.center().x, rect.bottom()),
+            Side::Left => Pos2::new(rect.left(), rect.center().y),
+        }
     }
 }
 
@@ -127,10 +185,20 @@ impl CanvasView {
         self.loaded.as_ref().map(|(p, _)| p.as_path())
     }
 
-    /// Render the canvas. Returns the note id the user clicked on a
-    /// `type: "file"` node, if any — the caller can use it to open that
-    /// note in the Digital Garden window.
-    pub fn ui(&mut self, ui: &mut Ui) -> Option<String> {
+    /// Render the canvas. Returns the note id the user clicked either on
+    /// a `type: "file"` node OR on an internal wiki-link inside a text
+    /// node — the caller uses it to open that note in the Digital Garden.
+    ///
+    /// `directory` is the currently-loaded notes directory, if any. When
+    /// present, text nodes are rendered via the full markdown parser
+    /// (bold, italics, code blocks, wiki-links, images). When absent, or
+    /// when a node's rect is too small to bother with markdown, a plain
+    /// galley is used instead.
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        directory: Option<&NoteDirectory>,
+    ) -> Option<String> {
         let accent = palette::accent_now();
         let mut clicked_file: Option<String> = None;
 
@@ -233,16 +301,33 @@ impl CanvasView {
             else {
                 continue;
             };
-            let from_center = Pos2::new(
-                (from_tl.x + from_br.x) / 2.0,
-                (from_tl.y + from_br.y) / 2.0,
-            );
-            let to_center =
-                Pos2::new((to_tl.x + to_br.x) / 2.0, (to_tl.y + to_br.y) / 2.0);
-            shapes.push(Shape::line_segment(
-                [from_center, to_center],
+            let from_rect = Rect::from_two_pos(*from_tl, *from_br);
+            let to_rect = Rect::from_two_pos(*to_tl, *to_br);
+
+            // Resolve sides: prefer explicit `from_side` / `to_side` from
+            // the JSON; fall back to whichever side faces the other node.
+            let from_side = edge
+                .from_side_resolved()
+                .unwrap_or_else(|| infer_side(from_rect, to_rect.center()));
+            let to_side = edge
+                .to_side_resolved()
+                .unwrap_or_else(|| infer_side(to_rect, from_rect.center()));
+
+            let p0 = from_side.anchor(from_rect);
+            let p3 = to_side.anchor(to_rect);
+            let straight = (p3 - p0).length();
+            // Control-point distance scales with the straight-line distance
+            // so short edges curve tightly and long edges sweep gently.
+            let control_dist = (straight * 0.5).clamp(30.0, 240.0);
+            let p1 = p0 + from_side.outward() * control_dist;
+            let p2 = p3 + to_side.outward() * control_dist;
+
+            shapes.push(Shape::CubicBezier(CubicBezierShape::from_points_stroke(
+                [p0, p1, p2, p3],
+                false,
+                Color32::TRANSPARENT,
                 Stroke::new(1.5, accent.linear_multiply(0.7)),
-            ));
+            )));
         }
 
         // Draw nodes. `group`-type nodes act as background containers, so
@@ -319,15 +404,42 @@ impl CanvasView {
                 .or(node.file.as_deref())
                 .or(node.url.as_deref());
             if let Some(text) = content {
-                let font = egui::FontId::proportional(12.0 * self.scale.clamp(0.5, 1.5));
-                let galley = ui.painter().layout(
-                    text.to_string(),
-                    font,
-                    ui.visuals().text_color(),
-                    (rect.width() - 12.0).max(10.0),
-                );
-                let text_pos = Pos2::new(rect.left() + 6.0, rect.top() + 6.0);
-                shapes.push(Shape::galley(text_pos, galley, ui.visuals().text_color()));
+                // For actual text-type nodes with a loaded notes directory
+                // and enough room to be worth the effort, render the body
+                // through the full markdown parser so *emphasis*, `code`,
+                // and `[[wiki-links]]` all work. Otherwise fall back to a
+                // scaled plain galley so tiny / non-text nodes stay legible.
+                let inner = rect.shrink(6.0);
+                let can_render_markdown = node.node_type == "text"
+                    && directory.is_some()
+                    && inner.width() > 80.0
+                    && inner.height() > 32.0;
+                if can_render_markdown {
+                    // SAFETY: checked above.
+                    let dir = directory.unwrap();
+                    render_markdown_in_node(
+                        ui,
+                        inner,
+                        text,
+                        dir,
+                        &mut clicked_file,
+                    );
+                } else {
+                    let font =
+                        egui::FontId::proportional(12.0 * self.scale.clamp(0.5, 1.5));
+                    let galley = ui.painter().layout(
+                        text.to_string(),
+                        font,
+                        ui.visuals().text_color(),
+                        (rect.width() - 12.0).max(10.0),
+                    );
+                    let text_pos = Pos2::new(rect.left() + 6.0, rect.top() + 6.0);
+                    shapes.push(Shape::galley(
+                        text_pos,
+                        galley,
+                        ui.visuals().text_color(),
+                    ));
+                }
             }
         }
 
@@ -359,4 +471,62 @@ fn file_to_note_id(file: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(file)
         .to_string()
+}
+
+/// Render a text node's body through the full markdown parser inside a
+/// sub-UI clipped to the node's inner rect. Wiki-link clicks are routed
+/// into `clicked_file` so the caller can open the target note in the
+/// Digital Garden alongside file-node clicks.
+fn render_markdown_in_node(
+    ui: &mut Ui,
+    inner: Rect,
+    text: &str,
+    directory: &NoteDirectory,
+    clicked_file: &mut Option<String>,
+) {
+    use crate::digital_garden::markdown_parser;
+
+    let mut wiki_clicked: Option<String> = None;
+    let mut on_link = |target: &str| {
+        // The markdown renderer calls this for both external URLs and
+        // wiki-links. Only wiki-links should map to "open in garden" —
+        // external URLs are handled by egui's hyperlink_to automatically.
+        if directory.resolve_link(target).is_some() {
+            wiki_clicked = Some(target.to_string());
+        }
+    };
+    // Task toggles inside a canvas node have no on-disk target (the
+    // markdown lives in a JSON blob, not a .md file), so we ignore them.
+    let mut on_task = |_idx: usize, _checked: bool| {};
+
+    let builder = UiBuilder::new().max_rect(inner);
+    ui.scope_builder(builder, |sub_ui| {
+        sub_ui.set_clip_rect(inner);
+        markdown_parser::render(sub_ui, text, directory, &mut on_link, &mut on_task);
+    });
+
+    if let Some(target) = wiki_clicked {
+        // Normalise wiki-link target → canonical note id, same as file nodes.
+        if let Some(note) = directory.resolve_link(&target) {
+            *clicked_file = Some(note.id.clone());
+        }
+    }
+}
+
+/// Which side of `from_rect` is closest (by angle) to `to_center`?
+/// Used when the canvas JSON doesn't specify an explicit `fromSide`/`toSide`.
+fn infer_side(from_rect: Rect, to_center: Pos2) -> Side {
+    let dx = to_center.x - from_rect.center().x;
+    let dy = to_center.y - from_rect.center().y;
+    if dx.abs() >= dy.abs() {
+        if dx >= 0.0 {
+            Side::Right
+        } else {
+            Side::Left
+        }
+    } else if dy >= 0.0 {
+        Side::Bottom
+    } else {
+        Side::Top
+    }
 }

@@ -17,10 +17,13 @@ pub struct TemplateApp {
     projects_is_open: bool,
     canvas_is_open: bool,
     workouts_is_open: bool,
+    binary_clock_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
     #[serde(skip)]
     fractal_clock: crate::apps::FractalClock,
+    #[serde(skip)]
+    binary_clock: crate::apps::BinaryClock,
     #[serde(skip)]
     about_me: crate::about::AboutMe,
     #[serde(skip)]
@@ -59,8 +62,10 @@ impl Default for TemplateApp {
             projects_is_open: false,
             canvas_is_open: false,
             workouts_is_open: false,
+            binary_clock_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
+            binary_clock: Default::default(),
             about_me: Default::default(),
             projects: Default::default(),
             canvas_view: Default::default(),
@@ -93,6 +98,11 @@ impl TemplateApp {
         // outer menu bar + sidebar + window chrome pick up the amber palette
         // even before the Digital Garden window is opened.
         app.digital_garden.apply_theme(&cc.egui_ctx);
+
+        // Image loaders: enables `file://`, `http(s)://`, `data:` URIs in
+        // `egui::Image::new(...)`. Used by the markdown renderer for
+        // inline `![alt](src)` tags.
+        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         // Auto-load the persisted notes directory so the digital garden is ready
         // on launch without the user re-entering the path every session.
@@ -193,6 +203,12 @@ impl eframe::App for TemplateApp {
                     if ui.selectable_label(self.calc_is_open, "Calculator").clicked() {
                         self.calc_is_open = true;
                     }
+                    if ui
+                        .selectable_label(self.binary_clock_is_open, "Binary Clock")
+                        .clicked()
+                    {
+                        self.binary_clock_is_open = true;
+                    }
                     if ui.selectable_label(self.canvas_is_open, "Canvas").clicked() {
                         self.canvas_is_open = true;
                     }
@@ -248,6 +264,14 @@ impl eframe::App for TemplateApp {
             .open(&mut self.calc_is_open)
             .show(ctx, |ui| self.calculator.ui(ui));
 
+        egui::Window::new("Binary Clock")
+            .open(&mut self.binary_clock_is_open)
+            .default_width(360.0)
+            .default_height(260.0)
+            .show(ctx, |ui| {
+                self.binary_clock.ui(ui, Some(seconds_since_midnight()))
+            });
+
         egui::Window::new("Pseudo-Resumé")
             .open(&mut self.resume_is_open)
             .fixed_size([760.0, 760.0])
@@ -269,7 +293,13 @@ impl eframe::App for TemplateApp {
             .open(&mut self.canvas_is_open)
             .default_width(900.0)
             .default_height(640.0)
-            .show(ctx, |ui| self.canvas_view.ui(ui))
+            .show(ctx, |ui| {
+                // Pass through the currently-loaded notes directory so
+                // markdown rendered inside text nodes can resolve
+                // `[[wiki-links]]` across to the Digital Garden.
+                let directory = self.digital_garden.note_directory.as_ref();
+                self.canvas_view.ui(ui, directory)
+            })
             .and_then(|r| r.inner)
             .flatten();
         // A file-type canvas node click = "go open this note". Resolve it

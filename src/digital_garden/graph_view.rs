@@ -56,11 +56,27 @@ pub struct GraphView {
 
     /// Ideal edge length derived from the graph area + node count.
     layout_k: f32,
+
+    /// Node currently being dragged by the mouse, if any. While `Some`,
+    /// drags move just this node; empty-space drags still pan.
+    dragged_node: Option<String>,
 }
 
 const LAYOUT_AREA: f32 = 1_000_000.0;
 const LAYOUT_TOTAL_ITERS: usize = 150;
 const LAYOUT_COOLING: f32 = 0.95;
+/// Base node radius in graph units (screen radius = this × `scale`).
+const NODE_RADIUS: f32 = 5.0;
+/// Scale thresholds at which always-on labels fade in/out. Between
+/// these values the opacity ramps linearly; below the min, labels are
+/// invisible so a zoomed-out overview stays uncluttered.
+const LABEL_FADE_IN_SCALE: f32 = 0.75;
+const LABEL_FADE_FULL_SCALE: f32 = 1.25;
+/// Temperature floor applied while the user is dragging a node, so the
+/// rest of the graph reacts instead of sitting frozen.
+const DRAG_TEMPERATURE: f32 = 50.0;
+/// How many FR iterations to keep queued while a drag is active.
+const DRAG_ITERS: usize = 6;
 
 impl Default for GraphView {
     fn default() -> Self {
@@ -75,6 +91,7 @@ impl Default for GraphView {
             layout_iters_remaining: 0,
             layout_temperature: 0.0,
             layout_k: 0.0,
+            dragged_node: None,
         }
     }
 }
@@ -152,7 +169,11 @@ impl GraphView {
 
     /// Advance one Fruchterman-Reingold iteration. Returns `true` if more
     /// iterations remain after this call (the caller should `request_repaint`).
-    fn layout_step(&mut self) -> bool {
+    ///
+    /// `pinned` is the id of a node the user is actively dragging, if any —
+    /// its displacement is computed (so neighbours still get pulled toward
+    /// it) but not applied, keeping the drag handle under the cursor.
+    fn layout_step(&mut self, pinned: Option<&str>) -> bool {
         if self.layout_iters_remaining == 0 || self.nodes.len() < 2 {
             return false;
         }
@@ -198,8 +219,13 @@ impl GraphView {
             }
         }
 
-        // Clamp each displacement by the current temperature.
+        // Clamp each displacement by the current temperature. The pinned
+        // node skips this step — its position is set by the mouse each
+        // frame, so physics shouldn't move it.
         for id in &ids {
+            if Some(id.as_str()) == pinned {
+                continue;
+            }
             let d = disp[id];
             let dist = d.length();
             if dist > 0.0 {
@@ -220,20 +246,56 @@ impl GraphView {
     pub fn ui(&mut self, ui: &mut Ui, note_directory: &NoteDirectory) -> Option<String> {
         // Run one FR iteration per frame until the queue drains. Keeps the
         // UI responsive and lets the user watch the graph relax into shape.
-        if self.layout_step() {
+        let pinned = self.dragged_node.clone();
+        if self.layout_step(pinned.as_deref()) {
             ui.ctx().request_repaint();
         }
 
         let available_rect = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(available_rect, Sense::click_and_drag());
+        let center = available_rect.center().to_vec2();
 
         let mut clicked_node = None;
 
-        // Handle interactions
+        // ---- Drag interaction ----
+        //
+        // Node drag vs. canvas pan is decided on `drag_started`: if the
+        // pointer is over a node at the moment the drag begins, we latch
+        // onto that node for the duration; otherwise we pan.
+        if response.drag_started() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                self.dragged_node = self.node_at_screen_pos(pos, center);
+                self.prev_mouse_pos = Some(pos);
+            }
+        }
+        if response.drag_stopped() {
+            self.dragged_node = None;
+            self.prev_mouse_pos = None;
+        }
+
         if response.dragged() {
             if let Some(mouse_pos) = ui.input(|i| i.pointer.interact_pos()) {
-                if let Some(prev_pos) = self.prev_mouse_pos {
-                    self.offset += mouse_pos - prev_pos;
+                match self.dragged_node.clone() {
+                    Some(id) => {
+                        // Pin the dragged node to the cursor. Convert from
+                        // screen space back to graph space first.
+                        let graph_pos = self.screen_to_graph(mouse_pos, center);
+                        if let Some(node) = self.nodes.get_mut(&id) {
+                            node.pos = graph_pos;
+                        }
+                        // Re-energize the layout so neighbours react.
+                        self.layout_temperature = self.layout_temperature.max(DRAG_TEMPERATURE);
+                        if self.layout_iters_remaining < DRAG_ITERS {
+                            self.layout_iters_remaining = DRAG_ITERS;
+                        }
+                        ui.ctx().request_repaint();
+                    }
+                    None => {
+                        // Pan the whole canvas.
+                        if let Some(prev) = self.prev_mouse_pos {
+                            self.offset += mouse_pos - prev;
+                        }
+                    }
                 }
                 self.prev_mouse_pos = Some(mouse_pos);
                 self.dragging = true;
@@ -243,7 +305,7 @@ impl GraphView {
             self.dragging = false;
         }
 
-        // Handle zooming
+        // ---- Zoom ----
         if let Some(hover_pos) = response.hover_pos() {
             let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll_delta != 0.0 {
@@ -259,70 +321,94 @@ impl GraphView {
             }
         }
 
-        let center = available_rect.center().to_vec2();
-
-        // Draw connections first (so they're behind nodes)
+        // ---- Edges ----
         let mut shapes = Vec::new();
+        let node_radius = NODE_RADIUS * self.scale;
+        let arrow_size = (5.0 * self.scale).clamp(3.0, 8.0);
 
         for (node_id, node) in &self.nodes {
-            let node_pos = center + (node.pos + self.offset) * self.scale;
+            let src_pos = Pos2::new(
+                center.x + (node.pos.x + self.offset.x) * self.scale,
+                center.y + (node.pos.y + self.offset.y) * self.scale,
+            );
 
             for conn_id in &node.connections {
-                if let Some(conn_node) = self.nodes.get(conn_id) {
-                    let conn_pos = center + (conn_node.pos + self.offset) * self.scale;
-
-                    // Skip self-connections
-                    if node_id == conn_id {
-                        continue;
-                    }
-
-                    // Determine color based on selection/hover state
-                    let color = if self.selected_node.as_ref() == Some(node_id)
-                        || self.hovered_node.as_ref() == Some(node_id)
-                        || self.selected_node.as_ref() == Some(conn_id)
-                        || self.hovered_node.as_ref() == Some(conn_id)
-                    {
-                        Color32::from_rgb(200, 200, 100)
-                    } else {
-                        Color32::from_rgb(100, 100, 100)
-                    };
-
-                    shapes.push(Shape::line_segment(
-                        [
-                            Pos2::new(node_pos.x, node_pos.y),
-                            Pos2::new(conn_pos.x, conn_pos.y),
-                        ],
-                        Stroke::new(1.0, color),
-                    ));
+                if node_id == conn_id {
+                    continue;
                 }
+                let Some(conn_node) = self.nodes.get(conn_id) else {
+                    continue;
+                };
+                let dst_pos = Pos2::new(
+                    center.x + (conn_node.pos.x + self.offset.x) * self.scale,
+                    center.y + (conn_node.pos.y + self.offset.y) * self.scale,
+                );
+
+                let highlighted = self.selected_node.as_deref() == Some(node_id)
+                    || self.hovered_node.as_deref() == Some(node_id)
+                    || self.selected_node.as_deref() == Some(conn_id)
+                    || self.hovered_node.as_deref() == Some(conn_id);
+                let color = if highlighted {
+                    Color32::from_rgb(200, 200, 100)
+                } else {
+                    Color32::from_rgb(100, 100, 100)
+                };
+
+                draw_directed_edge(
+                    &mut shapes,
+                    src_pos,
+                    dst_pos,
+                    node_radius,
+                    color,
+                    1.0,
+                    arrow_size,
+                );
             }
         }
 
-        // Draw nodes
+        // ---- Nodes + labels ----
         self.hovered_node = None;
 
+        let label_alpha =
+            ((self.scale - LABEL_FADE_IN_SCALE) / (LABEL_FADE_FULL_SCALE - LABEL_FADE_IN_SCALE))
+                .clamp(0.0, 1.0);
+
         for (node_id, node) in &self.nodes {
-            let node_pos = center + (node.pos + self.offset) * self.scale;
-            let node_radius = 5.0 * self.scale;
+            let node_pos = Pos2::new(
+                center.x + (node.pos.x + self.offset.x) * self.scale,
+                center.y + (node.pos.y + self.offset.y) * self.scale,
+            );
             let node_rect = Rect::from_center_size(
-                Pos2::new(node_pos.x, node_pos.y),
+                node_pos,
                 Vec2::new(node_radius * 2.0, node_radius * 2.0),
             );
 
             let accent = palette::accent_now();
             let is_selected = self.selected_node.as_ref() == Some(node_id);
-            let node_color = if is_selected {
+            let is_dragged = self.dragged_node.as_deref() == Some(node_id.as_str());
+            let node_color = if is_selected || is_dragged {
                 accent
             } else {
                 // Deeper/dimmer version of the accent for unselected nodes.
                 accent.linear_multiply(0.55)
             };
 
-            shapes.push(Shape::circle_filled(
-                Pos2::new(node_pos.x, node_pos.y),
-                node_radius,
-                node_color,
-            ));
+            shapes.push(Shape::circle_filled(node_pos, node_radius, node_color));
+
+            // Zoom-aware always-on label. Fades in between LABEL_FADE_IN
+            // and LABEL_FADE_FULL scales so a wide-out overview stays clean.
+            if label_alpha > 0.01 {
+                let alpha_u8 = (label_alpha * 200.0) as u8;
+                let label_color = Color32::from_rgba_unmultiplied(220, 220, 220, alpha_u8);
+                let font = egui::FontId::proportional((11.0 * self.scale).clamp(10.0, 16.0));
+                let galley =
+                    ui.painter().layout_no_wrap(node.title.clone(), font, label_color);
+                let label_pos = Pos2::new(
+                    node_pos.x + node_radius + 6.0,
+                    node_pos.y - galley.size().y / 2.0,
+                );
+                shapes.push(Shape::galley(label_pos, galley, label_color));
+            }
 
             // Check for hover
             if response
@@ -412,6 +498,72 @@ impl GraphView {
 
         clicked_node
     }
+
+    /// Pointer-hit-test: which node, if any, sits under screen position `p`?
+    /// Uses the current `scale` + `offset` to map each node's graph-space
+    /// position into screen coordinates and does a circular distance check.
+    fn node_at_screen_pos(&self, p: Pos2, center: Vec2) -> Option<String> {
+        let r = NODE_RADIUS * self.scale;
+        for (id, node) in &self.nodes {
+            let screen = Pos2::new(
+                center.x + (node.pos.x + self.offset.x) * self.scale,
+                center.y + (node.pos.y + self.offset.y) * self.scale,
+            );
+            if (screen - p).length() <= r + 2.0 {
+                // +2px slop — easier to grab a small node at low zoom.
+                return Some(id.clone());
+            }
+        }
+        None
+    }
+
+    /// Inverse of the forward projection used everywhere else:
+    ///   screen = center + (graph + offset) * scale
+    /// ⇒ graph  = (screen − center) / scale − offset
+    fn screen_to_graph(&self, p: Pos2, center: Vec2) -> Vec2 {
+        (p.to_vec2() - center) / self.scale - self.offset
+    }
+}
+
+/// Draw an edge with a small triangular arrowhead at the destination end.
+/// The line is shortened by the node radius on both ends so neither its
+/// start nor its tip disappears inside the endpoint circles.
+fn draw_directed_edge(
+    shapes: &mut Vec<Shape>,
+    from: Pos2,
+    to: Pos2,
+    node_radius: f32,
+    color: Color32,
+    stroke_width: f32,
+    arrow_size: f32,
+) {
+    let delta = to - from;
+    let dist = delta.length();
+    // If the endpoints overlap or are very close, skip — there's nothing
+    // sensible to draw and arrow math would blow up.
+    if dist < node_radius * 2.0 + 1.0 {
+        return;
+    }
+    let dir = delta / dist;
+    let perp = Vec2::new(-dir.y, dir.x);
+    let line_start = from + dir * node_radius;
+    let line_end = to - dir * node_radius;
+
+    shapes.push(Shape::line_segment(
+        [line_start, line_end],
+        Stroke::new(stroke_width, color),
+    ));
+
+    // Arrowhead triangle pointing toward the destination.
+    let tip = line_end;
+    let back = tip - dir * arrow_size;
+    let left = back + perp * arrow_size * 0.5;
+    let right = back - perp * arrow_size * 0.5;
+    shapes.push(Shape::convex_polygon(
+        vec![tip, left, right],
+        color,
+        Stroke::NONE,
+    ));
 }
 
 /// Generate a random position for a node

@@ -1,6 +1,8 @@
 mod graph_view;
 mod history;
-mod markdown_parser;
+// `pub(crate)` so the canvas viewer can reuse the markdown renderer to
+// render rich text inside canvas nodes (bold, italics, wiki-links, etc.).
+pub(crate) mod markdown_parser;
 mod note;
 mod note_directory;
 mod search;
@@ -612,6 +614,10 @@ impl DigitalGarden {
 
         let mut link_selected: Option<String> = None;
         let mut tag_selected: Option<String> = None;
+        // Task-checkbox clicks gathered during the render pass, applied
+        // afterwards when we can take `&mut self` again.
+        let mut pending_task_toggles_storage: Vec<(usize, bool)> = Vec::new();
+        let pending_task_toggles: &mut Vec<(usize, bool)> = &mut pending_task_toggles_storage;
 
         // Restore the scroll position we saved the last time this note was
         // rendered. For a fresh note, the map lookup misses and the area
@@ -695,18 +701,29 @@ impl DigitalGarden {
                         let mut on_link_click = |target_id: &str| {
                             link_selected = Some(target_id.to_string());
                         };
+                        // Buffer task toggles for post-render handling
+                        // (we can't write to disk while `self` is borrowed
+                        // by the ScrollArea closure).
+                        let mut task_toggles: Vec<(usize, bool)> = Vec::new();
+                        let mut on_task_toggle = |idx: usize, checked: bool| {
+                            task_toggles.push((idx, checked));
+                        };
                         markdown_parser::render(
                             ui,
                             &note.content,
                             &directory,
                             &mut on_link_click,
+                            &mut on_task_toggle,
                         );
                         markdown_parser::render_embeds(
                             ui,
                             note,
                             &directory,
                             &mut on_link_click,
+                            &mut on_task_toggle,
                         );
+                        // Stash toggles on the outer scope via a closure-captured Vec.
+                        *pending_task_toggles = task_toggles;
 
                         // Backlinks footer
                         let backlinks = directory.backlinks(&note.id);
@@ -762,6 +779,58 @@ impl DigitalGarden {
         }
         if let Some(tag) = tag_selected {
             self.active_tag = Some(tag);
+        }
+
+        // Task-checkbox toggles from this frame — write back to disk.
+        if !pending_task_toggles_storage.is_empty() {
+            self.apply_task_toggles(&note.clone(), &pending_task_toggles_storage);
+        }
+    }
+
+    /// Write the edited markdown back to disk after the user clicked a
+    /// task checkbox. The watcher will then pick up the change and
+    /// refresh the in-memory note — same loop as any external edit.
+    fn apply_task_toggles(&mut self, note: &Arc<Note>, toggles: &[(usize, bool)]) {
+        let Some(directory) = self.note_directory.as_ref() else {
+            return;
+        };
+        let mut content = note.content.clone();
+        for (idx, _checked) in toggles {
+            match markdown_parser::toggle_task(&content, *idx) {
+                Some(new_content) => content = new_content,
+                None => {
+                    eprintln!(
+                        "task-list toggle failed: couldn't find marker #{} in {}",
+                        idx, note.id
+                    );
+                    return;
+                }
+            }
+        }
+        let abs_path = directory.root_path.join(&note.path);
+        if let Err(err) = std::fs::write(&abs_path, &content) {
+            eprintln!(
+                "failed to write {}: {} — discarding toggle",
+                abs_path.display(),
+                err
+            );
+            return;
+        }
+
+        // Optimistically refresh `current_note` so the checkbox reflects
+        // its new state on the very next frame rather than waiting for the
+        // watcher's debounce window. The watcher's reload will then be a
+        // no-op (content already matches disk).
+        if let Some(current) = self.current_note.as_ref() {
+            if current.id == note.id {
+                let mut updated = (**current).clone();
+                updated.content = content;
+                self.current_note = Some(Arc::new(updated));
+            }
+        }
+
+        if self.watcher.is_none() {
+            self.reload_directory();
         }
     }
 

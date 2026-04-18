@@ -13,7 +13,10 @@
       "Bash(/opt/homebrew/bin/rg \"^error\" -A 6)",
       "Bash(/opt/homebrew/bin/rg \"^error|^warning:\" -A 3)",
       "Bash(/opt/homebrew/bin/rg \"^error\" -A 5)",
-      "Bash(/opt/homebrew/bin/rg \"^error\" -A 4)"
+      "Bash(/opt/homebrew/bin/rg \"^error\" -A 4)",
+      "Bash(/opt/homebrew/bin/rg \"^error|^warning: \\(un|dead\\)\" -A 3)",
+      "Bash(/opt/homebrew/bin/rg \"warning\")",
+      "Bash(/opt/homebrew/bin/rg -n \"^impl |^\\\\}$\" /Users/jsh/dev/projects/gui_garden/src/digital_garden/graph_view.rs)"
     ]
   }
 }

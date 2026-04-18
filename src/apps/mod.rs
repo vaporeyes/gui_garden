@@ -1,3 +1,4 @@
+mod binary_clock;
 mod calculator;
 mod canvas_view;
 mod fractal_clock;
@@ -6,6 +7,7 @@ mod projects;
 mod workouts;
 
 pub use easy_mark::easy_mark;
+pub use binary_clock::BinaryClock;
 pub use calculator::Calculator;
 pub use canvas_view::CanvasView;
 pub use fractal_clock::FractalClock;
