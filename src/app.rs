@@ -427,9 +427,13 @@ fn seconds_since_midnight() -> f64 {
 
 // egui 0.32 unified menus on top of the new Popup API; menus now close on
 // click by default, so explicit `ui.close_menu()` calls are obsolete.
+// egui 0.32 unified menus on top of the new Popup API; menus now close on
+// click by default, so explicit `ui.close_menu()` calls are obsolete.
 #[cfg(target_arch = "wasm32")]
 fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
     ui.menu_button("File", |ui| {
+        egui::gui_zoom::zoom_menu_buttons(ui);
+        ui.separator();
         if ui
             .button("Reset egui memory")
             .on_hover_text("Forget scroll, positions, sizes etc")
@@ -443,6 +447,8 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
 #[cfg(not(target_arch = "wasm32"))]
 fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
     ui.menu_button("File", |ui| {
+        egui::gui_zoom::zoom_menu_buttons(ui);
+        ui.separator();
         if ui.button("Organize windows").clicked() {
             ui.ctx().memory_mut(|mem| mem.reset_areas());
         }
