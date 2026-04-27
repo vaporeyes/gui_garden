@@ -52,6 +52,18 @@ pub struct TemplateApp {
     #[serde(skip)]
     notes_directory_error: Option<String>,
     output_event_history: std::collections::VecDeque<egui::output::OutputEvent>,
+    /// In-flight confirmation request, if any. egui 0.30+ gives us proper
+    /// `Modal`s (input-blocking, escape-to-dismiss); we use them for
+    /// destructive ops that drop unrecoverable state.
+    #[serde(skip)]
+    pending_confirm: Option<PendingConfirm>,
+}
+
+/// Destructive actions that require a Modal confirmation before running.
+#[derive(Clone, Copy)]
+enum PendingConfirm {
+    ChangeNotesFolder,
+    ResetEguiMemory,
 }
 
 impl Default for TemplateApp {
@@ -81,6 +93,7 @@ impl Default for TemplateApp {
             canvas_path: String::new(),
             notes_directory_error: None,
             output_event_history: Default::default(),
+            pending_confirm: None,
         }
     }
 }
@@ -136,6 +149,58 @@ impl TemplateApp {
 
         app
     }
+
+    /// Render the confirmation modal for any in-flight destructive op.
+    /// Modal blocks input behind it; Esc/click-outside dismisses (cancel),
+    /// the right-aligned confirm button executes the action.
+    fn render_pending_confirm(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_confirm else {
+            return;
+        };
+        let (heading, body, confirm_label) = match pending {
+            PendingConfirm::ChangeNotesFolder => (
+                "Change notes folder?",
+                "This drops the loaded directory, browse history, and graph state. The notes themselves are not modified.",
+                "Change folder",
+            ),
+            PendingConfirm::ResetEguiMemory => (
+                "Reset egui memory?",
+                "This clears scroll positions, window placements, and other per-widget UI state. Your data is not affected.",
+                "Reset memory",
+            ),
+        };
+        let response = egui::Modal::new(egui::Id::new("pending_confirm")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.heading(heading);
+            ui.add_space(6.0);
+            ui.label(body);
+            ui.add_space(12.0);
+            let (_, right) = egui::Sides::new().show(
+                ui,
+                |_| {},
+                |ui| {
+                    let confirmed = ui
+                        .add(egui::Button::new(confirm_label).fill(ui.visuals().error_fg_color))
+                        .clicked();
+                    let cancelled = ui.button("Cancel").clicked();
+                    (confirmed, cancelled)
+                },
+            );
+            right
+        });
+        let (confirmed, cancelled) = response.inner;
+        if confirmed {
+            match pending {
+                PendingConfirm::ChangeNotesFolder => self.digital_garden.close_directory(),
+                PendingConfirm::ResetEguiMemory => {
+                    ctx.memory_mut(|mem| *mem = Default::default());
+                }
+            }
+            self.pending_confirm = None;
+        } else if cancelled || response.should_close() {
+            self.pending_confirm = None;
+        }
+    }
 }
 
 impl eframe::App for TemplateApp {
@@ -172,7 +237,7 @@ impl eframe::App for TemplateApp {
             // themes (Garden Dark/Light, Obsidian Dark/Light) live in the
             // Digital Garden's Settings modal instead.
             egui::MenuBar::new().ui(ui, |ui| {
-                file_menu_button(ui, _frame);
+                file_menu_button(ui, _frame, &mut self.pending_confirm);
             });
         });
 
@@ -243,9 +308,10 @@ impl eframe::App for TemplateApp {
                     if self.digital_garden.note_directory.is_some()
                         && ui.button("Change notes folder").clicked()
                     {
-                        // Drop everything tied to the old path — including
-                        // the filesystem watcher, which used to leak.
-                        self.digital_garden.close_directory();
+                        // Confirm before dropping the directory; close_directory
+                        // releases the filesystem watcher and clears the
+                        // history/graph state, none of which is recoverable.
+                        self.pending_confirm = Some(PendingConfirm::ChangeNotesFolder);
                     }
 
                     sidebar_section(ui, "system", accent);
@@ -393,6 +459,8 @@ impl eframe::App for TemplateApp {
                         }
                     });
             });
+
+        self.render_pending_confirm(&ctx);
     }
 
 
@@ -430,7 +498,11 @@ fn seconds_since_midnight() -> f64 {
 // egui 0.32 unified menus on top of the new Popup API; menus now close on
 // click by default, so explicit `ui.close_menu()` calls are obsolete.
 #[cfg(target_arch = "wasm32")]
-fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
+fn file_menu_button(
+    ui: &mut Ui,
+    _frame: &mut eframe::Frame,
+    pending_confirm: &mut Option<PendingConfirm>,
+) {
     ui.menu_button("File", |ui| {
         egui::gui_zoom::zoom_menu_buttons(ui);
         ui.separator();
@@ -439,13 +511,17 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
             .on_hover_text("Forget scroll, positions, sizes etc")
             .clicked()
         {
-            ui.ctx().memory_mut(|mem| *mem = Default::default());
+            *pending_confirm = Some(PendingConfirm::ResetEguiMemory);
         }
     });
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
+fn file_menu_button(
+    ui: &mut Ui,
+    _frame: &mut eframe::Frame,
+    pending_confirm: &mut Option<PendingConfirm>,
+) {
     ui.menu_button("File", |ui| {
         egui::gui_zoom::zoom_menu_buttons(ui);
         ui.separator();
@@ -457,7 +533,7 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
             .on_hover_text("Forget scroll, positions, sizes etc")
             .clicked()
         {
-            ui.ctx().memory_mut(|mem| *mem = Default::default());
+            *pending_confirm = Some(PendingConfirm::ResetEguiMemory);
         }
         if ui.button("Quit").clicked() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

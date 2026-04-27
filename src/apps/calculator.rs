@@ -116,18 +116,20 @@ impl Calculator {
     }
 
     fn draw_keypad(&mut self, ui: &mut Ui) {
+        // Each button gets a hover tooltip showing its keyboard shortcut, so
+        // the keyboard handler in `handle_keyboard` is discoverable from the UI.
         // Row 1: C  ±  %  ÷
         ui.horizontal(|ui| {
-            if action_button(ui, "C") {
+            if action_button(ui, "C", "Esc") {
                 self.press_clear();
             }
-            if action_button(ui, "±") {
+            if action_button(ui, "±", "n") {
                 self.press_negate();
             }
-            if action_button(ui, "%") {
+            if action_button(ui, "%", "%") {
                 self.press_percent();
             }
-            if operator_button(ui, "÷") {
+            if operator_button(ui, "÷", "/") {
                 self.press_op(Op::Div);
             }
         });
@@ -142,7 +144,7 @@ impl Calculator {
             if digit_button(ui, "9") {
                 self.press_digit('9');
             }
-            if operator_button(ui, "×") {
+            if operator_button(ui, "×", "*") {
                 self.press_op(Op::Mul);
             }
         });
@@ -157,7 +159,7 @@ impl Calculator {
             if digit_button(ui, "6") {
                 self.press_digit('6');
             }
-            if operator_button(ui, "−") {
+            if operator_button(ui, "−", "-") {
                 self.press_op(Op::Sub);
             }
         });
@@ -172,7 +174,7 @@ impl Calculator {
             if digit_button(ui, "3") {
                 self.press_digit('3');
             }
-            if operator_button(ui, "+") {
+            if operator_button(ui, "+", "+") {
                 self.press_op(Op::Add);
             }
         });
@@ -186,7 +188,7 @@ impl Calculator {
             if digit_button(ui, ".") {
                 self.press_decimal();
             }
-            if operator_button(ui, "=") {
+            if operator_button(ui, "=", "Enter") {
                 self.press_equals();
             }
         });
@@ -432,24 +434,26 @@ fn format_number(n: f64) -> String {
 }
 
 fn digit_button(ui: &mut Ui, label: &str) -> bool {
-    styled_button(ui, label, GRAY, BTN)
+    // Digits self-document — the visible label is the shortcut.
+    styled_button(ui, label, GRAY, BTN, label)
 }
 
 fn wide_digit_button(ui: &mut Ui, label: &str, width: f32) -> bool {
-    styled_button(ui, label, GRAY, width)
+    styled_button(ui, label, GRAY, width, label)
 }
 
-fn operator_button(ui: &mut Ui, label: &str) -> bool {
-    styled_button(ui, label, palette::accent_now(), BTN)
+fn operator_button(ui: &mut Ui, label: &str, shortcut: &str) -> bool {
+    styled_button(ui, label, palette::accent_now(), BTN, shortcut)
 }
 
-fn action_button(ui: &mut Ui, label: &str) -> bool {
-    styled_button(ui, label, DKGRAY, BTN)
+fn action_button(ui: &mut Ui, label: &str, shortcut: &str) -> bool {
+    styled_button(ui, label, DKGRAY, BTN, shortcut)
 }
 
-fn styled_button(ui: &mut Ui, label: &str, fill: Color32, width: f32) -> bool {
+fn styled_button(ui: &mut Ui, label: &str, fill: Color32, width: f32, shortcut: &str) -> bool {
     let text = RichText::new(label).size(22.0).monospace().color(WHITE);
     ui.add_sized([width, BTN], egui::Button::new(text).fill(fill))
+        .on_hover_text(format!("Shortcut: {shortcut}"))
         .clicked()
 }
 
