@@ -12,7 +12,7 @@
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher};
 use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
 /// Default minimum interval between re-scans; keeps a burst of "file saved"
@@ -79,11 +79,8 @@ impl DirectoryWatcher {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let mut any = false;
-            loop {
-                match self.rx.try_recv() {
-                    Ok(()) => any = true,
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                }
+            while self.rx.try_recv().is_ok() {
+                any = true;
             }
             if !any {
                 return false;

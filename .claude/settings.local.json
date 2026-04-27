@@ -16,7 +16,13 @@
       "Bash(/opt/homebrew/bin/rg \"^error\" -A 4)",
       "Bash(/opt/homebrew/bin/rg \"^error|^warning: \\(un|dead\\)\" -A 3)",
       "Bash(/opt/homebrew/bin/rg \"warning\")",
-      "Bash(/opt/homebrew/bin/rg -n \"^impl |^\\\\}$\" /Users/jsh/dev/projects/gui_garden/src/digital_garden/graph_view.rs)"
+      "Bash(/opt/homebrew/bin/rg -n \"^impl |^\\\\}$\" /Users/jsh/dev/projects/gui_garden/src/digital_garden/graph_view.rs)",
+      "Bash(awk '/^## 0.32.0/,/^## 0.31.0/' /Users/jsh/dev/repos/egui/CHANGELOG.md)",
+      "Bash(awk '/^## 0.30.0/,/^## 0.29.0/' /Users/jsh/dev/repos/egui/CHANGELOG.md)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo test *)",
+      "Bash(rustup target *)",
+      "Bash(cargo build *)"
     ]
   }
 }

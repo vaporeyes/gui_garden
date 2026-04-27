@@ -6,19 +6,10 @@
 
 const HISTORY_CAP: usize = 100;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct History {
     entries: Vec<String>,
     position: usize,
-}
-
-impl Default for History {
-    fn default() -> Self {
-        Self {
-            entries: Vec::new(),
-            position: 0,
-        }
-    }
 }
 
 impl History {

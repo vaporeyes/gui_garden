@@ -108,22 +108,22 @@ fn rich_text_from_style(text: &str, style: &easy_mark::Style) -> RichText {
 
     let mut rich_text = RichText::new(text);
     if heading && !small {
-        rich_text = egui::RichText::from(text).size(18 as f32).strong()
+        rich_text = egui::RichText::from(text).size(18.0).strong()
     }
     if heading2 && !small {
-        rich_text = egui::RichText::from(text).size(16 as f32).strong()
+        rich_text = egui::RichText::from(text).size(16.0).strong()
     }
     if heading3 && !small {
-        rich_text = egui::RichText::from(text).size(14 as f32).strong()
+        rich_text = egui::RichText::from(text).size(14.0).strong()
     }
     if heading4 && !small {
-        rich_text = egui::RichText::from(text).size(12 as f32).strong()
+        rich_text = egui::RichText::from(text).size(12.0).strong()
     }
     if heading5 && !small {
-        rich_text = egui::RichText::from(text).size(10 as f32).strong()
+        rich_text = egui::RichText::from(text).size(10.0).strong()
     }
     if heading6 && !small {
-        rich_text = egui::RichText::from(text).size(8 as f32).strong()
+        rich_text = egui::RichText::from(text).size(8.0).strong()
     }
     if small && !heading {
         rich_text = rich_text.small();
@@ -164,7 +164,7 @@ fn bullet_point(ui: &mut Ui, width: f32) -> Response {
 
 fn numbered_point(ui: &mut Ui, width: f32, number: &str) -> Response {
     let font_id = TextStyle::Body.resolve(ui.style());
-    let row_height = ui.fonts(|fonts| fonts.row_height(&font_id));
+    let row_height = ui.fonts_mut(|fonts| fonts.row_height(&font_id));
     let (rect, response) = ui.allocate_exact_size(vec2(width, row_height), Sense::hover());
     let text = format!("{}.", number);
     let text_color = ui.visuals().strong_text_color();

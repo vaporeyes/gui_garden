@@ -23,6 +23,7 @@ pub struct SearchResult {
 }
 
 /// Search manager
+#[derive(Default)]
 pub struct Search {
     /// Current search query
     pub query: String,
@@ -36,17 +37,6 @@ pub struct Search {
     /// Input query cached against the results, so we only re-run the search
     /// when the typed query actually changes (avoids per-frame work).
     last_run_query: String,
-}
-
-impl Default for Search {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            results: Vec::new(),
-            selected_index: None,
-            last_run_query: String::new(),
-        }
-    }
 }
 
 impl Search {
@@ -98,7 +88,7 @@ impl Search {
             });
         }
 
-        results.sort_by(|a, b| b.score.cmp(&a.score));
+        results.sort_by_key(|r| std::cmp::Reverse(r.score));
         self.results = results;
         self.selected_index = if self.results.is_empty() { None } else { Some(0) };
     }
@@ -359,8 +349,8 @@ fn flatten_whitespace(s: &str, match_offset: usize) -> (String, usize) {
                 // output offset shrinks by the chars we skip.
                 new_offset = new_offset.saturating_sub(len);
             }
-            prev_space = !prev_space || false; // collapse any further spaces
-            if prev_space && byte_pos < match_offset && out.len() == 0 {
+            prev_space = true; // collapse any further spaces
+            if prev_space && byte_pos < match_offset && out.is_empty() {
                 // unreachable; kept for clarity
             }
         } else {

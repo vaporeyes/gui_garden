@@ -145,7 +145,7 @@ impl ThemeManager {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     
-                    if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
+                    if path.is_file() && path.extension().is_some_and(|ext| ext == "json") {
                         if let Ok(content) = fs::read_to_string(&path) {
                             if let Ok(theme) = serde_json::from_str::<ThemeConfig>(&content) {
                                 if !self.available_themes.contains(&theme.name) {

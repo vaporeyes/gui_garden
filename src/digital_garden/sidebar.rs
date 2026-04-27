@@ -126,11 +126,9 @@ impl Sidebar {
             }
         });
 
-        if !self.search_query.is_empty() {
-            if ui.small_button("clear filter").clicked() {
-                self.search_query.clear();
-                self.search_results.clear();
-            }
+        if !self.search_query.is_empty() && ui.small_button("clear filter").clicked() {
+            self.search_query.clear();
+            self.search_results.clear();
         }
 
         ui.add_space(10.0);

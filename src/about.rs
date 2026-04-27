@@ -4,13 +4,8 @@ use crate::palette;
 
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
+#[derive(Default)]
 pub struct AboutMe {}
-
-impl Default for AboutMe {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 /// A skill and a qualitative strength, 0..1. The rendered chip's background
 /// saturation and text weight scale with the value, but no numeric percentage

@@ -358,7 +358,7 @@ impl Workouts {
         let start = align_to_sunday(first);
         let end = align_to_saturday(last);
         let total_days = (end - start).num_days() as usize + 1;
-        let weeks = (total_days + 6) / 7;
+        let weeks = total_days.div_ceil(7);
 
         let max_sessions = self
             .days

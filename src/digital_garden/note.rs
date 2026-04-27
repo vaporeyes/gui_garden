@@ -102,7 +102,7 @@ impl Note {
         self.frontmatter.title.clone().unwrap_or_else(|| {
             // Convert ID to title case
             let mut title = String::new();
-            let id = self.id.replace('_', " ").replace('-', " ");
+            let id = self.id.replace(['_', '-'], " ");
 
             let mut capitalize = true;
             for c in id.chars() {

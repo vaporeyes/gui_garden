@@ -211,7 +211,7 @@ fn scan_folder(
 
         if path.is_dir() {
             // Recursively process subfolder
-            match scan_folder(&root_path, &path, notes) {
+            match scan_folder(root_path, &path, notes) {
                 Ok(subfolder) => folder.folders.push(Arc::new(subfolder)),
                 Err(err) => eprintln!("Error scanning subfolder {:?}: {}", path, err),
             }
@@ -394,7 +394,7 @@ mod tests {
         let c = corpus();
         let bl = compute_backlinks(&c);
         assert!(
-            bl.get("MISSING").is_some(),
+            bl.contains_key("MISSING"),
             "dead wiki-links still show up so we can render a dead-link affordance"
         );
     }

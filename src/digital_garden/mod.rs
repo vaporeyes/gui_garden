@@ -23,7 +23,7 @@ pub use theme::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use egui::{Layout, ScrollArea, SidePanel, TopBottomPanel, Ui, Window};
+use egui::{Layout, Panel, ScrollArea, Ui, Window};
 use serde::{Deserialize, Serialize};
 
 /// Main digital garden app
@@ -329,7 +329,7 @@ impl DigitalGarden {
 
         // Top panel with navigation and search — namespaced ID to avoid
         // collision with the outer TemplateApp's "top_panel".
-        TopBottomPanel::top("dg_top_panel")
+        Panel::top("dg_top_panel")
             .show_separator_line(false)
             .show_inside(ui, |ui| {
                 ui.add_space(4.0);
@@ -341,10 +341,10 @@ impl DigitalGarden {
         // actions out of the closure and handle them *after* the directory
         // borrow ends, so `load_note` can take `&mut self` cleanly.
         let sidebar_action: sidebar::SidebarAction = if !self.is_mobile || self.show_sidebar {
-            SidePanel::left("dg_sidebar")
+            Panel::left("dg_sidebar")
                 .resizable(true)
-                .default_width(240.0)
-                .width_range(200.0..=380.0)
+                .default_size(240.0)
+                .size_range(200.0..=380.0)
                 .show_inside(ui, |ui| match self.note_directory.as_ref() {
                     Some(directory) => {
                         let recent = self.history.recent(5);

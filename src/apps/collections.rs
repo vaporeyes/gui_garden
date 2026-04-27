@@ -111,6 +111,7 @@ struct SampleItem {
     notes: &'static str,
 }
 
+#[derive(Default)]
 pub struct Collections {
     loaded: Option<(PathBuf, CollectionFile)>,
     /// Selected item id, if any — clicking a card pins it and reveals
@@ -118,17 +119,6 @@ pub struct Collections {
     selected: Option<String>,
     error: Option<String>,
     query: String,
-}
-
-impl Default for Collections {
-    fn default() -> Self {
-        Self {
-            loaded: None,
-            selected: None,
-            error: None,
-            query: String::new(),
-        }
-    }
 }
 
 impl Collections {

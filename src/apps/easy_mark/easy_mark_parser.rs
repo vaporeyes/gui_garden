@@ -13,7 +13,6 @@ pub enum Item<'a> {
     // TODO(emilk): add Style here so empty heading still uses up the right amount of space.
     Newline,
 
-    ///
     Text(Style, &'a str),
 
     /// title, url
@@ -88,11 +87,9 @@ pub struct Style {
 /// See the module-level documentation for details.
 ///
 /// # Example:
-/// ```
-/// # use egui_demo_lib::easy_mark::parser::Parser;
+/// ```ignore
 /// for item in Parser::new("Hello *world*!") {
 /// }
-///
 /// ```
 pub struct Parser<'a> {
     /// The remainder of the input text

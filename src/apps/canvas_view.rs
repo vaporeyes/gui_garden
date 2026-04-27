@@ -72,6 +72,7 @@ impl CanvasEdge {
     fn to(&self) -> Option<&str> {
         self.to_node.as_deref().or(self.to_node_alt.as_deref())
     }
+    #[allow(clippy::wrong_self_convention)]
     fn from_side_resolved(&self) -> Option<Side> {
         Side::parse(
             self.from_side
@@ -352,7 +353,7 @@ impl CanvasView {
             let is_file_hovered = is_file
                 && response
                     .hover_pos()
-                    .map_or(false, |p| rect.contains(p));
+                    .is_some_and(|p| rect.contains(p));
 
             let (fill, stroke_color) = match node.node_type.as_str() {
                 "group" => (

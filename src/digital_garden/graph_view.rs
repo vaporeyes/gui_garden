@@ -413,7 +413,7 @@ impl GraphView {
             // Check for hover
             if response
                 .hover_pos()
-                .map_or(false, |p| node_rect.contains(p))
+                .is_some_and(|p| node_rect.contains(p))
             {
                 self.hovered_node = Some(node_id.clone());
 

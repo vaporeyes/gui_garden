@@ -123,6 +123,7 @@ impl BinaryClock {
 
     // ---------- BCD layout ----------
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_bcd(
         &self,
         painter: &Painter,
@@ -209,6 +210,7 @@ impl BinaryClock {
 
     // ---------- pure binary layout ----------
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_pure(
         &self,
         painter: &Painter,

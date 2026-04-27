@@ -145,15 +145,18 @@ impl eframe::App for TemplateApp {
     }
 
     /// Called each time the UI needs repainting, which may be many times per second.
-    /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// Put your widgets into a `Panel`, `Window` or `Area`.
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // egui 0.34: `Ui` derefs to `Context`, but we still need a clonable
+        // handle for `Window::show(ctx, ...)` further down.
+        let ctx = ui.ctx().clone();
         // Re-stamp the theme on every frame so the whole app chrome — top
         // panel, outer sidebar, window frames — picks up the named palette
         // (and any runtime Poline tinting) regardless of which window the
         // user is currently in. Previously the theme was only applied at
         // startup + on Settings changes, so named themes only reached the
         // Digital Garden's interior.
-        self.digital_garden.apply_theme(ctx);
+        self.digital_garden.apply_theme(&ctx);
 
         ctx.output(|o| {
             for event in &o.events {
@@ -163,21 +166,21 @@ impl eframe::App for TemplateApp {
         while self.output_event_history.len() > 1000 {
             self.output_event_history.pop_front();
         }
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+        egui::Panel::top("top_panel").show_inside(ui, |ui| {
             // We own the visuals via `DigitalGarden::apply_theme`, so the
             // built-in egui light/dark switch would just fight us. Named
             // themes (Garden Dark/Light, Obsidian Dark/Light) live in the
             // Digital Garden's Settings modal instead.
-            egui::menu::bar(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 file_menu_button(ui, _frame);
             });
         });
 
-        if is_mobile(ctx) == false {
-            egui::SidePanel::left("side_panel")
-                .default_width(250.0)
+        if !is_mobile(&ctx) {
+            egui::Panel::left("side_panel")
+                .default_size(250.0)
                 .resizable(false)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let accent = crate::palette::accent_now();
                     ui.heading("🔧 Garden Tools");
                     ui.separator();
@@ -264,7 +267,7 @@ impl eframe::App for TemplateApp {
                 });
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             self.fractal_clock.ui(ui, Some(seconds_since_midnight()));
             ui.vertical_centered(|ui| {
                 ui.heading("🏡 My Digital Garden");
@@ -273,38 +276,38 @@ impl eframe::App for TemplateApp {
 
         egui::Window::new("A Calculator")
             .open(&mut self.calc_is_open)
-            .show(ctx, |ui| self.calculator.ui(ui));
+            .show(&ctx, |ui| self.calculator.ui(ui));
 
         egui::Window::new("Binary Clock")
             .open(&mut self.binary_clock_is_open)
             .default_width(360.0)
             .default_height(260.0)
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 self.binary_clock.ui(ui, Some(seconds_since_midnight()))
             });
 
         egui::Window::new("Pseudo-Resumé")
             .open(&mut self.resume_is_open)
             .fixed_size([760.0, 760.0])
-            .show(ctx, |ui| easy_mark(ui, EASYMARK_DATA));
+            .show(&ctx, |ui| easy_mark(ui, EASYMARK_DATA));
 
         egui::Window::new("About Me")
             .open(&mut self.about_is_open)
             .default_width(600.0)
             .default_height(640.0)
-            .show(ctx, |ui| self.about_me.ui(ui));
+            .show(&ctx, |ui| self.about_me.ui(ui));
 
         egui::Window::new("Projects")
             .open(&mut self.projects_is_open)
             .default_width(620.0)
             .default_height(640.0)
-            .show(ctx, |ui| self.projects.ui(ui));
+            .show(&ctx, |ui| self.projects.ui(ui));
 
         let canvas_clicked_file = egui::Window::new("Canvas")
             .open(&mut self.canvas_is_open)
             .default_width(900.0)
             .default_height(640.0)
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 // Pass through the currently-loaded notes directory so
                 // markdown rendered inside text nodes can resolve
                 // `[[wiki-links]]` across to the Digital Garden.
@@ -333,13 +336,13 @@ impl eframe::App for TemplateApp {
             .open(&mut self.workouts_is_open)
             .default_width(900.0)
             .default_height(420.0)
-            .show(ctx, |ui| self.workouts.ui(ui));
+            .show(&ctx, |ui| self.workouts.ui(ui));
 
         egui::Window::new("Collections")
             .open(&mut self.collections_is_open)
             .default_width(720.0)
             .default_height(640.0)
-            .show(ctx, |ui| self.collections.ui(ui));
+            .show(&ctx, |ui| self.collections.ui(ui));
         if let Some(p) = self.workouts.loaded_path() {
             let s = p.to_string_lossy().to_string();
             if s != self.workouts_path {
@@ -354,7 +357,7 @@ impl eframe::App for TemplateApp {
             .default_height(720.0)
             .min_width(640.0)
             .min_height(420.0)
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 // If notes directory is not set, show a welcome panel with
                 // path controls and example paths.
                 if self.digital_garden.note_directory.is_none() {
@@ -376,7 +379,7 @@ impl eframe::App for TemplateApp {
             .open(&mut self.events_is_open)
             .resizable(true)
             .default_width(520.0)
-            .show(ctx, |ui| {
+            .show(&ctx, |ui| {
                 clock_button(ui, seconds_since_midnight());
                 ui.label("Recent output events from egui.");
 
@@ -393,7 +396,7 @@ impl eframe::App for TemplateApp {
     }
 
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {}
+    fn on_exit(&mut self) {}
 
     fn auto_save_interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(30)
@@ -422,6 +425,8 @@ fn seconds_since_midnight() -> f64 {
     time.num_seconds_from_midnight() as f64 + 1e-9 * (time.nanosecond() as f64)
 }
 
+// egui 0.32 unified menus on top of the new Popup API; menus now close on
+// click by default, so explicit `ui.close_menu()` calls are obsolete.
 #[cfg(target_arch = "wasm32")]
 fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
     ui.menu_button("File", |ui| {
@@ -431,7 +436,6 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
             .clicked()
         {
             ui.ctx().memory_mut(|mem| *mem = Default::default());
-            ui.close_menu();
         }
     });
 }
@@ -441,7 +445,6 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
     ui.menu_button("File", |ui| {
         if ui.button("Organize windows").clicked() {
             ui.ctx().memory_mut(|mem| mem.reset_areas());
-            ui.close_menu();
         }
         if ui
             .button("Reset egui memory")
@@ -449,7 +452,6 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
             .clicked()
         {
             ui.ctx().memory_mut(|mem| *mem = Default::default());
-            ui.close_menu();
         }
         if ui.button("Quit").clicked() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -458,7 +460,7 @@ fn file_menu_button(ui: &mut Ui, _frame: &mut eframe::Frame) {
 }
 
 pub fn is_mobile(ctx: &egui::Context) -> bool {
-    let screen_size = ctx.input(|i| i.screen_rect().size());
+    let screen_size = ctx.input(|i| i.content_rect().size());
     screen_size.x < 550.0
 }
 
