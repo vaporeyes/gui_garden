@@ -33,7 +33,9 @@
       "Bash(curl -sSfL \"https://api.github.com/repos/IBM/plex/contents/\")",
       "Bash(command -v pyftsubset)",
       "Bash(pyftsubset --help)",
-      "Bash(python3 -c \"import fontTools\")"
+      "Bash(python3 -c \"import fontTools\")",
+      "Read(//Users/jsh/dev/repos/poline/src/**)",
+      "Read(//Users/jsh/dev/repos/poline/**)"
     ]
   }
 }

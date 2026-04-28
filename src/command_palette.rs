@@ -21,6 +21,7 @@ pub enum WindowKind {
     Collections,
     BinaryClock,
     Bezier,
+    PaletteStudio,
     AppEvents,
 }
 
@@ -37,6 +38,7 @@ impl WindowKind {
             Self::Collections => "Collections",
             Self::BinaryClock => "Binary Clock",
             Self::Bezier => "Bezier Playground",
+            Self::PaletteStudio => "Palette Studio",
             Self::AppEvents => "App Events",
         }
     }
@@ -49,7 +51,8 @@ impl WindowKind {
             | Self::Canvas
             | Self::Workouts
             | Self::Collections
-            | Self::Bezier => "tools",
+            | Self::Bezier
+            | Self::PaletteStudio => "tools",
             Self::DigitalGarden => "notes",
             Self::AppEvents => "system",
         }
@@ -82,6 +85,7 @@ pub enum PaletteItem {
     Window(WindowKind),
     Note { id: String, title: String },
     System(SystemAction),
+    Scheme(crate::palette::Scheme),
 }
 
 impl PaletteItem {
@@ -90,6 +94,7 @@ impl PaletteItem {
             Self::Window(w) => w.label(),
             Self::Note { title, .. } => title,
             Self::System(s) => s.label(),
+            Self::Scheme(s) => s.label(),
         }
     }
 
@@ -98,6 +103,7 @@ impl PaletteItem {
             Self::Window(w) => w.group(),
             Self::Note { .. } => "note",
             Self::System(_) => "system",
+            Self::Scheme(_) => "scheme",
         }
     }
 }
@@ -108,6 +114,7 @@ pub enum PaletteResult {
     OpenWindow(WindowKind),
     OpenNote(String),
     System(SystemAction),
+    Scheme(crate::palette::Scheme),
 }
 
 #[derive(Default)]
@@ -262,6 +269,7 @@ fn item_to_result(item: &PaletteItem) -> PaletteResult {
         PaletteItem::Window(w) => PaletteResult::OpenWindow(*w),
         PaletteItem::Note { id, .. } => PaletteResult::OpenNote(id.clone()),
         PaletteItem::System(s) => PaletteResult::System(*s),
+        PaletteItem::Scheme(s) => PaletteResult::Scheme(*s),
     }
 }
 

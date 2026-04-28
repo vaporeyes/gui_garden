@@ -442,8 +442,11 @@ impl GraphView {
             let node_color = if highlighted {
                 accent
             } else {
-                // Deeper/dimmer version of the accent for unselected nodes.
-                accent.linear_multiply(0.55)
+                // Each node picks a stable color from the active Poline
+                // palette by hashing its id. Same note → same color
+                // every frame; different notes spread across the
+                // gradient. Dimmed so it sits behind the highlighted state.
+                palette::color_for_key(node_id).linear_multiply(0.65)
             };
 
             // Optical bloom: 4 concentric circles drawn behind the main

@@ -691,15 +691,21 @@ impl DigitalGarden {
                         }
 
                         // Tag chips — clickable, set the active tag filter.
+                        // Each chip picks a stable color from the active
+                        // Poline palette by hashing the tag name, so the
+                        // tag set is visually scannable instead of a
+                        // monochrome list.
                         if !note.frontmatter.tags.is_empty() {
                             ui.add_space(10.0);
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing.x = 6.0;
                                 for tag in &note.frontmatter.tags {
+                                    let tag_color = crate::palette::color_for_key(tag);
                                     let chip = egui::RichText::new(format!("#{}", tag))
                                         .small()
-                                        .color(accent)
-                                        .background_color(chip_bg);
+                                        .color(tag_color)
+                                        .background_color(tag_color.linear_multiply(0.18));
+                                    let _ = (accent, chip_bg); // keep bindings live for downstream callers
                                     let resp = ui
                                         .add(egui::Label::new(chip).sense(egui::Sense::click()))
                                         .on_hover_cursor(egui::CursorIcon::PointingHand)

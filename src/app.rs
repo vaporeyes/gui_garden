@@ -24,6 +24,7 @@ pub struct TemplateApp {
     binary_clock_is_open: bool,
     collections_is_open: bool,
     bezier_is_open: bool,
+    palette_studio_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
     #[serde(skip)]
@@ -42,6 +43,8 @@ pub struct TemplateApp {
     collections: crate::apps::Collections,
     #[serde(skip)]
     bezier: crate::apps::BezierPlayground,
+    #[serde(skip)]
+    palette_studio: crate::apps::PaletteStudio,
     /// DigitalGarden's runtime state is all `#[serde(skip)]` internally; the
     /// only field that persists is user preferences like the hot-reload
     /// debounce window, which survive restarts.
@@ -68,6 +71,10 @@ pub struct TemplateApp {
     /// items list each frame and dispatch the action it returns.
     #[serde(skip)]
     command_palette: CommandPalette,
+    /// Persisted active color-scheme index. The runtime live state is
+    /// the `palette::ACTIVE_SCHEME` atomic; this field is the on-disk
+    /// shadow that re-seeds the atomic on launch.
+    palette_scheme_idx: u8,
 }
 
 /// Destructive actions that require a Modal confirmation before running.
@@ -91,6 +98,7 @@ impl Default for TemplateApp {
             binary_clock_is_open: false,
             collections_is_open: false,
             bezier_is_open: false,
+            palette_studio_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
             binary_clock: Default::default(),
@@ -100,6 +108,7 @@ impl Default for TemplateApp {
             workouts: Default::default(),
             collections: Default::default(),
             bezier: Default::default(),
+            palette_studio: Default::default(),
             digital_garden: DigitalGarden::default(),
             notes_directory_path: String::new(),
             workouts_path: String::new(),
@@ -108,6 +117,7 @@ impl Default for TemplateApp {
             output_event_history: Default::default(),
             pending_confirm: None,
             command_palette: CommandPalette::default(),
+            palette_scheme_idx: 0,
         }
     }
 }
@@ -131,6 +141,14 @@ impl TemplateApp {
         } else {
             Default::default()
         };
+
+        // Restore the persisted color scheme into the runtime atomic so
+        // `palette::accent_now()` returns the user's last choice on
+        // first frame (otherwise the default `TimeOfDay` would briefly
+        // flash before any UI sets it).
+        crate::palette::set_active_scheme(crate::palette::Scheme::from_index(
+            app.palette_scheme_idx,
+        ));
 
         // Apply the digital-garden theme to the whole app up-front, so the
         // outer menu bar + sidebar + window chrome pick up the amber palette
@@ -189,6 +207,7 @@ impl TemplateApp {
             WindowKind::Workouts,
             WindowKind::Collections,
             WindowKind::Bezier,
+            WindowKind::PaletteStudio,
             WindowKind::AppEvents,
         ] {
             items.push(PaletteItem::Window(w));
@@ -201,6 +220,12 @@ impl TemplateApp {
             SystemAction::ResetZoom,
         ] {
             items.push(PaletteItem::System(s));
+        }
+        // Color schemes — flip the active Poline-driven accent. Listed
+        // by `Scheme::ALL` so adding new presets doesn't require a
+        // matching change here.
+        for s in crate::palette::Scheme::ALL {
+            items.push(PaletteItem::Scheme(*s));
         }
         // Notes — only when a directory is loaded. Recent notes go first
         // (newest-first, deduped) so an empty-query Cmd+K → Enter jumps
@@ -248,6 +273,13 @@ impl TemplateApp {
                 SystemAction::ZoomOut => egui::gui_zoom::zoom_out(ctx),
                 SystemAction::ResetZoom => ctx.set_zoom_factor(1.0),
             },
+            PaletteResult::Scheme(scheme) => {
+                crate::palette::set_active_scheme(scheme);
+                // Mirror to the persisted index so the next launch
+                // restores this scheme.
+                self.palette_scheme_idx = scheme.to_index();
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -285,6 +317,7 @@ impl TemplateApp {
             WindowKind::Collections => &mut self.collections_is_open,
             WindowKind::BinaryClock => &mut self.binary_clock_is_open,
             WindowKind::Bezier => &mut self.bezier_is_open,
+            WindowKind::PaletteStudio => &mut self.palette_studio_is_open,
             WindowKind::AppEvents => &mut self.events_is_open,
         }
     }
@@ -427,6 +460,7 @@ impl eframe::App for TemplateApp {
                     self.sidebar_toggle(ui, WindowKind::Workouts, "Workouts");
                     self.sidebar_toggle(ui, WindowKind::Collections, "Collections");
                     self.sidebar_toggle(ui, WindowKind::Bezier, "Bezier");
+                    self.sidebar_toggle(ui, WindowKind::PaletteStudio, "Palette Studio");
 
                     sidebar_section(ui, "notes", accent);
                     self.sidebar_toggle(ui, WindowKind::DigitalGarden, "Digital Garden");
@@ -543,6 +577,12 @@ impl eframe::App for TemplateApp {
             .default_width(560.0)
             .default_height(520.0)
             .show(&ctx, |ui| self.bezier.ui(ui));
+
+        egui::Window::new("Palette Studio")
+            .open(&mut self.palette_studio_is_open)
+            .default_width(640.0)
+            .default_height(520.0)
+            .show(&ctx, |ui| self.palette_studio.ui(ui));
         if let Some(p) = self.workouts.loaded_path() {
             let s = p.to_string_lossy().to_string();
             if s != self.workouts_path {
