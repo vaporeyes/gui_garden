@@ -234,6 +234,13 @@ impl DigitalGarden {
         }
     }
 
+    /// Most-recently-opened note ids (newest first, deduped, capped at `n`).
+    /// Used by the command palette to surface jump-back-to candidates when
+    /// the search query is empty.
+    pub fn recent_notes(&self, n: usize) -> Vec<String> {
+        self.history.recent(n)
+    }
+
     /// Load a note by id or wiki-link query. Delegates resolution to
     /// `NoteDirectory::resolve_link`, which handles exact id, case-insensitive
     /// id, slug, and title-match fallbacks (and filters out drafts).
@@ -632,11 +639,25 @@ impl DigitalGarden {
                     ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
                         ui.add_space(24.0);
 
+                        // Short accent bar above the title — editorial
+                        // flourish that anchors the article to the
+                        // current theme's accent color without dragging
+                        // the title baseline around.
+                        let bar_rect = ui
+                            .allocate_exact_size(
+                                egui::vec2(48.0, 3.0),
+                                egui::Sense::hover(),
+                            )
+                            .0;
+                        ui.painter().rect_filled(bar_rect, 1.5, accent);
+                        ui.add_space(10.0);
+
                         // Title
                         ui.label(
                             egui::RichText::new(note.title())
-                                .size(30.0)
+                                .size(34.0)
                                 .strong()
+                                .family(egui::FontFamily::Name("Serif".into()))
                                 .color(accent),
                         );
 

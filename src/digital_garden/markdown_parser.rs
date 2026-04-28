@@ -10,8 +10,34 @@
 // inside an inline-code span or fenced code block is left alone — we get
 // code-block awareness for free by leaning on the parser's tokenization.
 
-use egui::{Color32, RichText, Ui};
+use egui::{Color32, FontFamily, RichText, Ui};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+/// Custom family registered in `app::install_fonts` and used here for
+/// the markdown body and headings. Falls back to the proportional
+/// (UI sans) family if the install function isn't called or the
+/// custom-fonts feature is disabled, since `set_fonts` simply ignores
+/// missing names.
+fn serif() -> FontFamily {
+    FontFamily::Name("Serif".into())
+}
+
+/// Centered three-dot divider used in place of `<hr>`. The "dinkus" is
+/// the editorial convention for a section break that doesn't quite
+/// warrant a heading; lighter than a full-width rule.
+fn draw_dinkus(ui: &mut Ui) {
+    ui.add_space(12.0);
+    ui.vertical_centered(|ui| {
+        let muted = ui.visuals().weak_text_color();
+        ui.label(
+            RichText::new("• • •")
+                .size(11.0)
+                .color(muted)
+                .family(serif()),
+        );
+    });
+    ui.add_space(12.0);
+}
 
 use super::note::Note;
 use super::note_directory::NoteDirectory;
@@ -327,7 +353,9 @@ impl<'a> RenderState<'a> {
             Event::HardBreak => self.push(Inline::HardBreak),
             Event::Rule => {
                 self.flush_inlines(ui);
-                ui.separator();
+                // Centered three-dot ornament — editorial divider that
+                // breathes more than a full-width separator line.
+                draw_dinkus(ui);
             }
             Event::TaskListMarker(checked) => {
                 let idx = self.task_index;
@@ -353,7 +381,15 @@ impl<'a> RenderState<'a> {
             Tag::Paragraph => {}
             Tag::Heading { level, .. } => {
                 self.flush_inlines(ui);
-                ui.add_space(6.0);
+                // Editorial vertical rhythm: more breathing room above a
+                // heading than below, scaled by level.
+                let space_above = match level {
+                    HeadingLevel::H1 => 24.0,
+                    HeadingLevel::H2 => 18.0,
+                    HeadingLevel::H3 => 14.0,
+                    _ => 10.0,
+                };
+                ui.add_space(space_above);
                 self.heading = Some(level);
             }
             Tag::BlockQuote(_) => {
@@ -431,11 +467,16 @@ impl<'a> RenderState<'a> {
         match tag {
             TagEnd::Paragraph => {
                 self.flush_inlines(ui);
-                ui.add_space(6.0);
+                // Editorial paragraph rhythm: more breathing room between
+                // paragraphs than the default 6px. Headings already supply
+                // their own pre-space, so this only affects body prose.
+                ui.add_space(10.0);
             }
             TagEnd::Heading(level) => {
                 self.flush_heading(ui, level);
-                ui.add_space(4.0);
+                // Tight space after a heading — pulls the first paragraph
+                // of the section close to its title for visual grouping.
+                ui.add_space(2.0);
             }
             TagEnd::BlockQuote(_) => {
                 self.flush_inlines(ui);
@@ -598,62 +639,109 @@ impl<'a> RenderState<'a> {
         }
         let inlines = std::mem::take(&mut self.inlines);
 
+        let in_quote = self.quote_depth > 0;
+        let pad = 14.0 * self.quote_depth as f32;
         let mut frame = egui::Frame::NONE;
-        if self.quote_depth > 0 {
-            let pad = 14.0 * self.quote_depth as f32;
-            frame = frame
-                .inner_margin(egui::Margin {
-                    left: pad as i8,
-                    right: 0,
-                    top: 2,
-                    bottom: 2,
-                })
-                .stroke(egui::Stroke::new(2.0, ui.visuals().weak_text_color()));
+        if in_quote {
+            frame = frame.inner_margin(egui::Margin {
+                left: pad as i8,
+                right: 0,
+                top: 2,
+                bottom: 2,
+            });
         }
-        frame.show(ui, |ui| {
+        let inner = frame.show(ui, |ui| {
             render_inline_row(
                 ui,
                 &inlines,
                 self.on_link_click,
                 self.on_task_toggle,
-                self.quote_depth > 0,
+                in_quote,
             );
         });
+        // Accent-colored left border for blockquotes — replaces the old
+        // full-perimeter weak stroke. Drawn after the frame so it sits on
+        // top, hugging the inner-margin gutter.
+        if in_quote {
+            let rect = inner.response.rect;
+            let accent = crate::palette::accent_now();
+            let x = rect.left() + 2.0;
+            ui.painter().line_segment(
+                [
+                    egui::pos2(x, rect.top()),
+                    egui::pos2(x, rect.bottom()),
+                ],
+                egui::Stroke::new(4.0, accent),
+            );
+        }
     }
 
     fn flush_heading(&mut self, ui: &mut Ui, level: HeadingLevel) {
-        let size = match level {
-            HeadingLevel::H1 => 26.0,
-            HeadingLevel::H2 => 22.0,
-            HeadingLevel::H3 => 19.0,
-            HeadingLevel::H4 => 17.0,
-            HeadingLevel::H5 => 15.0,
-            HeadingLevel::H6 => 14.0,
+        // Size + weight curve tuned for editorial hierarchy: H1 dominates,
+        // H2/H3 step down clearly, H4-H6 stay in body-size territory and
+        // rely on weight rather than size to differentiate.
+        let (size, strong) = match level {
+            HeadingLevel::H1 => (32.0, true),
+            HeadingLevel::H2 => (24.0, true),
+            HeadingLevel::H3 => (19.0, true),
+            HeadingLevel::H4 => (16.5, true),
+            HeadingLevel::H5 => (15.0, false),
+            HeadingLevel::H6 => (14.0, false),
         };
         let text = inlines_to_plain(&self.inlines);
         self.inlines.clear();
         self.heading = None;
-        ui.label(RichText::new(text).size(size).strong());
+
+        let mut rich = RichText::new(&text).size(size).family(serif());
+        if strong {
+            rich = rich.strong();
+        }
+        let response = ui.label(rich);
+
+        // H1 gets a short accent-colored underline bar so it reads as
+        // the article's primary anchor rather than just "biggest text".
+        if matches!(level, HeadingLevel::H1) {
+            let rect = response.rect;
+            let accent = crate::palette::accent_now();
+            let y = rect.bottom() + 4.0;
+            ui.painter().line_segment(
+                [
+                    egui::pos2(rect.left(), y),
+                    egui::pos2(rect.left() + (rect.width() * 0.18).max(48.0), y),
+                ],
+                egui::Stroke::new(2.0, accent),
+            );
+            ui.add_space(8.0);
+        }
     }
 
     fn flush_list_item(&mut self, ui: &mut Ui) {
-        let bullet = if let Some(top) = self.list_stack.last_mut() {
+        let (bullet, is_ordinal) = if let Some(top) = self.list_stack.last_mut() {
             match top.ordinal.as_mut() {
                 Some(n) => {
                     let s = format!("{}. ", n);
                     *n += 1;
-                    s
+                    (s, true)
                 }
-                None => "•  ".to_string(),
+                None => ("•  ".to_string(), false),
             }
         } else {
-            "•  ".to_string()
+            ("•  ".to_string(), false)
         };
         let indent = 14.0 * self.list_stack.len().saturating_sub(1) as f32;
         let inlines = std::mem::take(&mut self.inlines);
+        let accent = crate::palette::accent_now();
         ui.horizontal_wrapped(|ui| {
             ui.add_space(indent);
-            ui.label(RichText::new(bullet).monospace());
+            // Unordered bullets pick up the theme accent so list items
+            // anchor visually; ordinal numbers stay in the body color
+            // since they're already information-bearing.
+            let bullet_text = if is_ordinal {
+                RichText::new(bullet).monospace()
+            } else {
+                RichText::new(bullet).monospace().color(accent)
+            };
+            ui.label(bullet_text);
             render_inline_row(
                 ui,
                 &inlines,
@@ -668,13 +756,30 @@ impl<'a> RenderState<'a> {
         let code = std::mem::take(&mut self.code_buffer);
         let lang = self.code_lang.clone().unwrap_or_default();
         let theme = egui_extras::syntax_highlighting::CodeTheme::from_style(ui.style());
-        egui::Frame::NONE
+        let frame_response = egui::Frame::NONE
             .fill(ui.visuals().code_bg_color)
             .inner_margin(egui::Margin::same(8))
-            .corner_radius(egui::CornerRadius::same(4))
+            .corner_radius(egui::CornerRadius::same(6))
             .show(ui, |ui| {
                 egui_extras::syntax_highlighting::code_view_ui(ui, &theme, &code, &lang);
-            });
+            })
+            .response;
+        // Language badge in the top-right of the frame. Only painted
+        // when the fence specified a language — anonymous blocks stay
+        // clean. Drawn directly via the painter so it sits over the
+        // frame's interior padding without participating in layout.
+        if !lang.is_empty() {
+            let rect = frame_response.rect;
+            let muted = ui.visuals().weak_text_color();
+            let label_pos = egui::pos2(rect.right() - 8.0, rect.top() + 6.0);
+            ui.painter().text(
+                label_pos,
+                egui::Align2::RIGHT_TOP,
+                &lang,
+                egui::FontId::new(10.0, FontFamily::Monospace),
+                muted,
+            );
+        }
         ui.add_space(4.0);
     }
 }
@@ -717,10 +822,19 @@ fn render_inline(
             code,
         } => {
             let mut rich = RichText::new(text).color(text_color);
+            // Body text uses the serif family; inline code stays in the
+            // monospace family (and gets a code-bg tint below).
+            if !*code {
+                rich = rich.family(serif());
+            }
             if *bold {
                 rich = rich.strong();
             }
-            if *italic {
+            // Italics: explicit `*foo*` from the source, OR an implicit
+            // italic when we're rendering inside a blockquote — `mute`
+            // doubles as the quote-indicator at this layer (it's only
+            // ever set by `flush_inlines` when `quote_depth > 0`).
+            if *italic || (mute && !*code) {
                 rich = rich.italics();
             }
             if *strikethrough {
@@ -814,6 +928,17 @@ fn draw_table(
     }
 
     ui.add_space(4.0);
+    // Rounded outer frame: zebra striping is already on the Grid; this
+    // adds a faint border + corner radius so the table reads as a
+    // distinct block instead of bleeding into surrounding prose.
+    let outer = egui::Frame::NONE
+        .stroke(egui::Stroke::new(
+            1.0,
+            ui.visuals().widgets.noninteractive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::same(4));
+    outer.show(ui, |ui| {
     egui::Grid::new(format!("md_table_{}", table_id))
         .striped(true)
         .spacing([12.0, 6.0])
@@ -863,6 +988,7 @@ fn draw_table(
                 ui.end_row();
             }
         });
+    });
     ui.add_space(4.0);
 }
 

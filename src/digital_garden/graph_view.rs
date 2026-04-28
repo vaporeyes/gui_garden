@@ -255,6 +255,49 @@ impl GraphView {
         let response = ui.allocate_rect(available_rect, Sense::click_and_drag());
         let center = available_rect.center().to_vec2();
 
+        // Distinct viewport backdrop: paints a faint inset frame so the
+        // graph area is always visually demarcated from the surrounding
+        // window fill, even when the active theme makes the two colors
+        // nearly identical. Cheap (one rect_filled) and removes the
+        // "black box" failure mode where empty / dark-on-dark graphs
+        // look like the window has no content.
+        ui.painter().rect_filled(
+            available_rect,
+            4.0,
+            ui.visuals().extreme_bg_color,
+        );
+
+        // Empty-state escape hatch: if the graph has no nodes (no notes
+        // loaded, all-drafts directory, or pre-build) show a message
+        // rather than an inscrutable empty pane.
+        if self.nodes.is_empty() {
+            let msg = if note_directory.published_notes().is_empty() {
+                "No published notes in this directory."
+            } else {
+                "Loading graph…"
+            };
+            ui.painter().text(
+                available_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                msg,
+                egui::FontId::proportional(14.0),
+                ui.visuals().weak_text_color(),
+            );
+            return None;
+        }
+        // Wall-clock seconds since startup; we feed this into the dashed
+        // edge offset to make highlighted edges flow toward their targets.
+        // Repaint each frame so the animation is continuous.
+        let time = ui.ctx().input(|i| i.time) as f32;
+        if self
+            .selected_node
+            .as_ref()
+            .or(self.hovered_node.as_ref())
+            .is_some()
+        {
+            ui.ctx().request_repaint();
+        }
+
         let mut clicked_node = None;
 
         // ---- Drag interaction ----
@@ -362,6 +405,8 @@ impl GraphView {
                     color,
                     1.0,
                     arrow_size,
+                    highlighted,
+                    time,
                 );
             }
         }
@@ -386,14 +431,47 @@ impl GraphView {
             let accent = palette::accent_now();
             let is_selected = self.selected_node.as_ref() == Some(node_id);
             let is_dragged = self.dragged_node.as_deref() == Some(node_id.as_str());
-            let node_color = if is_selected || is_dragged {
+            // Hover detection inline so we can drive the bloom effect on
+            // the same frame instead of lagging by one. The post-render
+            // `self.hovered_node` assignment below stays for the preview
+            // card logic that follows.
+            let is_hovered_now = response
+                .hover_pos()
+                .is_some_and(|p| node_rect.contains(p));
+            let highlighted = is_selected || is_dragged || is_hovered_now;
+            let node_color = if highlighted {
                 accent
             } else {
                 // Deeper/dimmer version of the accent for unselected nodes.
                 accent.linear_multiply(0.55)
             };
 
+            // Optical bloom: 4 concentric circles drawn behind the main
+            // node, each larger and exponentially fainter, simulating a
+            // cheap Gaussian glow without a real blur pass.
+            if highlighted {
+                for ring in 1..=4 {
+                    let r = node_radius + (ring as f32) * 4.0;
+                    let alpha = (60.0 * 0.55_f32.powi(ring - 1)) as u8;
+                    let glow = Color32::from_rgba_unmultiplied(
+                        accent.r(),
+                        accent.g(),
+                        accent.b(),
+                        alpha,
+                    );
+                    shapes.push(Shape::circle_filled(node_pos, r, glow));
+                }
+            }
+
             shapes.push(Shape::circle_filled(node_pos, node_radius, node_color));
+            // Always-on outline so the node remains visible even when
+            // `node_color` is close to the viewport / window background
+            // under a dark theme.
+            shapes.push(Shape::circle_stroke(
+                node_pos,
+                node_radius,
+                Stroke::new(1.0, ui.visuals().widgets.noninteractive.fg_stroke.color),
+            ));
 
             // Zoom-aware always-on label. Fades in between LABEL_FADE_IN
             // and LABEL_FADE_FULL scales so a wide-out overview stays clean.
@@ -528,6 +606,7 @@ impl GraphView {
 /// Draw an edge with a small triangular arrowhead at the destination end.
 /// The line is shortened by the node radius on both ends so neither its
 /// start nor its tip disappears inside the endpoint circles.
+#[allow(clippy::too_many_arguments)]
 fn draw_directed_edge(
     shapes: &mut Vec<Shape>,
     from: Pos2,
@@ -536,6 +615,8 @@ fn draw_directed_edge(
     color: Color32,
     stroke_width: f32,
     arrow_size: f32,
+    flow: bool,
+    time: f32,
 ) {
     let delta = to - from;
     let dist = delta.length();
@@ -549,10 +630,27 @@ fn draw_directed_edge(
     let line_start = from + dir * node_radius;
     let line_end = to - dir * node_radius;
 
-    shapes.push(Shape::line_segment(
-        [line_start, line_end],
-        Stroke::new(stroke_width, color),
-    ));
+    if flow {
+        // Animated dashed-flow rendering for highlighted edges. The
+        // offset is driven by wall-clock time so dashes appear to march
+        // from `from` toward `to`. Negative offset because epaint's dash
+        // offset shifts the first dash *forward* along the path.
+        let speed = 24.0; // pixels/sec
+        let offset = -(time * speed) % 12.0;
+        let dashed = Shape::dashed_line_with_offset(
+            &[line_start, line_end],
+            Stroke::new(stroke_width, color),
+            &[6.0],
+            &[6.0],
+            offset,
+        );
+        shapes.extend(dashed);
+    } else {
+        shapes.push(Shape::line_segment(
+            [line_start, line_end],
+            Stroke::new(stroke_width, color),
+        ));
+    }
 
     // Arrowhead triangle pointing toward the destination.
     let tip = line_end;

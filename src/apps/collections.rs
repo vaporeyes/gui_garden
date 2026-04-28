@@ -347,15 +347,32 @@ fn render_card(
     muted: Color32,
     is_selected: bool,
 ) -> bool {
+    // Interpolate fill brightness, stroke alpha, and corner radius across
+    // ~150ms whenever the hover bool flips. See `projects.rs` for the same
+    // pattern and rationale.
+    let card_id = ui.make_persistent_id(("collection_card", item.name()));
+    let prev_hovered = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(card_id))
+        .unwrap_or(false);
+    let t = ui.ctx().animate_bool_with_time(card_id, prev_hovered, 0.15);
+
+    let base_fill = ui.visuals().faint_bg_color;
+    let hover_fill = lerp_color(base_fill, accent, 0.12);
+    let fill = lerp_color(base_fill, hover_fill, t);
+    // Selected stroke wins over hover stroke; otherwise fade in on hover.
+    let stroke = if is_selected {
+        egui::Stroke::new(1.5, accent)
+    } else {
+        egui::Stroke::new(1.0, accent.linear_multiply(0.6 * t))
+    };
+    let corner = 6.0 + 2.0 * t;
+
     let response = egui::Frame::NONE
-        .fill(ui.visuals().faint_bg_color)
+        .fill(fill)
         .inner_margin(egui::Margin::same(8))
-        .corner_radius(egui::CornerRadius::same(6))
-        .stroke(if is_selected {
-            egui::Stroke::new(1.5, accent)
-        } else {
-            egui::Stroke::NONE
-        })
+        .corner_radius(egui::CornerRadius::same(corner as u8))
+        .stroke(stroke)
         .show(ui, |ui| {
             ui.set_min_size(size);
             ui.set_max_size(size);
@@ -402,7 +419,27 @@ fn render_card(
         })
         .response;
     let click_resp = response.interact(egui::Sense::click());
-    click_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    let hover_resp = click_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Persist hover for next frame's animation.
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(card_id, hover_resp.hovered()));
+    hover_resp.clicked()
+}
+
+/// Linear blend between two sRGB colors. Local copy of the helper in
+/// `projects.rs` — same rationale, kept colocated with its call site
+/// rather than promoted to `palette.rs`.
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp_u8 = |x: u8, y: u8| -> u8 {
+        ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8
+    };
+    Color32::from_rgba_unmultiplied(
+        lerp_u8(a.r(), b.r()),
+        lerp_u8(a.g(), b.g()),
+        lerp_u8(a.b(), b.b()),
+        lerp_u8(a.a(), b.a()),
+    )
 }
 
 fn coin_placeholder(ui: &mut Ui, h: f32, accent: Color32) {

@@ -1,4 +1,4 @@
-use egui::{containers::*, widgets::*, *};
+use egui::{widgets::*, *};
 use std::f32::consts::TAU;
 
 use crate::palette;
@@ -50,12 +50,18 @@ impl FractalClock {
         // Make sure we allocate what we used (everything)
         ui.expand_to_include_rect(painter.clip_rect());
 
-        Frame::popup(ui.style())
-            .stroke(Stroke::NONE)
-            .show(ui, |ui| {
+        // Settings render as a floating Window at the Context level so
+        // they don't allocate space in the central panel and push the
+        // "My Digital Garden" heading down. Users can drag the window
+        // around the canvas, and collapse it via the title-bar arrow.
+        egui::Window::new("Fractal Clock Settings")
+            .default_pos(egui::pos2(20.0, 20.0))
+            .default_open(true)
+            .resizable(false)
+            .movable(true)
+            .show(&ui.ctx().clone(), |ui| {
                 ui.set_max_width(270.0);
-                CollapsingHeader::new("Fractal Clock Settings")
-                    .show(ui, |ui| self.options_ui(ui, seconds_since_midnight));
+                self.options_ui(ui, seconds_since_midnight);
             });
     }
 

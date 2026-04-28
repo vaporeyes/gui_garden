@@ -392,10 +392,29 @@ fn render_project(
     muted: Color32,
     new_filter: &mut Option<String>,
 ) {
-    egui::Frame::NONE
-        .fill(ui.visuals().faint_bg_color)
+    // Probe-then-paint: pre-allocate a unique id keyed on the project name
+    // so we can drive an animation against the previous frame's hover
+    // state. egui's `animate_bool_with_time` interpolates 0.0 -> 1.0 over
+    // the given duration whenever the bool flips, giving us a smooth
+    // "warming up" effect on the card chrome without touching geometry.
+    let card_id = ui.make_persistent_id(("project_card", project.name()));
+    let prev_hovered = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(card_id))
+        .unwrap_or(false);
+    let t = ui.ctx().animate_bool_with_time(card_id, prev_hovered, 0.15);
+
+    let base_fill = ui.visuals().faint_bg_color;
+    let hover_fill = lerp_color(base_fill, accent, 0.12);
+    let fill = lerp_color(base_fill, hover_fill, t);
+    let stroke = egui::Stroke::new(1.0, accent.linear_multiply(0.6 * t));
+    let corner = 6.0 + 2.0 * t;
+
+    let response = egui::Frame::NONE
+        .fill(fill)
         .inner_margin(egui::Margin::same(10))
-        .corner_radius(egui::CornerRadius::same(6))
+        .corner_radius(egui::CornerRadius::same(corner as u8))
+        .stroke(stroke)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let name = RichText::new(project.name())
@@ -430,5 +449,31 @@ fn render_project(
                     }
                 }
             });
-        });
+        })
+        .response;
+
+    // Persist this frame's hover state so the next frame's animation
+    // converges towards it. `interact` widens the card's hit-test from
+    // the inner content to the whole frame so hovering the margins also
+    // counts.
+    let card_response = response.interact(egui::Sense::hover());
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(card_id, card_response.hovered()));
+}
+
+/// Linear blend between two sRGB colors. Lives here (not `palette.rs`)
+/// because it's only used for hover-state interpolation; promoting it
+/// requires deciding on gamma vs linear space which is more thought
+/// than this one site warrants.
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let lerp_u8 = |x: u8, y: u8| -> u8 {
+        ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8
+    };
+    Color32::from_rgba_unmultiplied(
+        lerp_u8(a.r(), b.r()),
+        lerp_u8(a.g(), b.g()),
+        lerp_u8(a.b(), b.b()),
+        lerp_u8(a.a(), b.a()),
+    )
 }

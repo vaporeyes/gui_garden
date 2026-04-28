@@ -138,7 +138,7 @@ impl AboutMe {
                 ui.label(
                     "Building infrastructure, weird apps, lifting heavy things, \
                      and making stuff. Usually somewhere between the terminal \
-                     and the rack.",
+                     and the squat rack.",
                 );
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {

@@ -1,3 +1,4 @@
+mod bezier_playground;
 mod binary_clock;
 mod calculator;
 mod canvas_view;
@@ -8,6 +9,7 @@ mod projects;
 mod workouts;
 
 pub use easy_mark::easy_mark;
+pub use bezier_playground::BezierPlayground;
 pub use binary_clock::BinaryClock;
 pub use calculator::Calculator;
 pub use canvas_view::CanvasView;

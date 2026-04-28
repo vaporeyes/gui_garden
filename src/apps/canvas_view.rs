@@ -6,7 +6,7 @@
 // be dropped in.
 
 use egui::epaint::CubicBezierShape;
-use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, Ui, UiBuilder, Vec2};
+use egui::{Color32, Pos2, Rangef, Rect, Scene, Sense, Shape, Stroke, Ui, UiBuilder, Vec2};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -127,9 +127,11 @@ impl Side {
 
 pub struct CanvasView {
     loaded: Option<(PathBuf, CanvasDocument)>,
-    offset: Vec2,
-    scale: f32,
-    prev_mouse_pos: Option<Pos2>,
+    /// View bounds in scene coordinates. `egui::Scene` mutates this in
+    /// response to pan/zoom; assigning `Rect::ZERO` triggers Scene's
+    /// auto-fit-to-content path on the next frame, which is how we
+    /// implement "Reset view".
+    scene_rect: Rect,
     error: Option<String>,
 }
 
@@ -137,9 +139,7 @@ impl Default for CanvasView {
     fn default() -> Self {
         Self {
             loaded: None,
-            offset: Vec2::ZERO,
-            scale: 1.0,
-            prev_mouse_pos: None,
+            scene_rect: Rect::ZERO,
             error: None,
         }
     }
@@ -172,8 +172,8 @@ impl CanvasView {
                 Ok(doc) => {
                     self.loaded = Some((path, doc));
                     self.error = None;
-                    self.offset = Vec2::ZERO;
-                    self.scale = 1.0;
+                    // Rect::ZERO triggers Scene's auto-fit on the next frame.
+                    self.scene_rect = Rect::ZERO;
                 }
                 Err(e) => self.error = Some(format!("parse error: {}", e)),
             },
@@ -201,15 +201,14 @@ impl CanvasView {
         directory: Option<&NoteDirectory>,
     ) -> Option<String> {
         let accent = palette::accent_now();
-        let mut clicked_file: Option<String> = None;
 
+        let mut reset_view = false;
         ui.horizontal(|ui| {
             if ui.button("📁 Load canvas…").clicked() {
                 self.pick_and_load();
             }
             if self.loaded.is_some() && ui.button("Reset view").clicked() {
-                self.offset = Vec2::ZERO;
-                self.scale = 1.0;
+                reset_view = true;
             }
             if let Some((path, doc)) = &self.loaded {
                 ui.label(
@@ -228,6 +227,12 @@ impl CanvasView {
                 );
             }
         });
+        if reset_view {
+            // Rect::ZERO trips Scene's auto-fit-to-content path on the
+            // next frame, which is exactly the "fit everything in view"
+            // behavior the old custom code emulated.
+            self.scene_rect = Rect::ZERO;
+        }
         if let Some(err) = &self.error {
             ui.colored_label(Color32::from_rgb(220, 80, 80), err);
         }
@@ -242,224 +247,231 @@ impl CanvasView {
                     .weak(),
                 );
             });
-            return clicked_file;
+            return None;
         };
 
-        let available = ui.available_rect_before_wrap();
-        let response = ui.allocate_rect(available, Sense::click_and_drag());
-
-        // Pan
-        if response.dragged() {
-            if let Some(mouse) = ui.input(|i| i.pointer.interact_pos()) {
-                if let Some(prev) = self.prev_mouse_pos {
-                    self.offset += mouse - prev;
-                }
-                self.prev_mouse_pos = Some(mouse);
-            }
-        } else {
-            self.prev_mouse_pos = None;
-        }
-        // Zoom
-        if response.hovered() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-            if scroll != 0.0 {
-                let old = self.scale;
-                self.scale = (self.scale * (1.0 + scroll * 0.001)).clamp(0.1, 5.0);
-                if let Some(hover) = response.hover_pos() {
-                    let center = available.center().to_vec2();
-                    let mouse_off = hover.to_vec2() - center - self.offset;
-                    let scale_change = self.scale / old;
-                    self.offset += mouse_off * (1.0 - scale_change);
-                }
-            }
-        }
-
-        let center = available.center().to_vec2();
-        let project = |x: f32, y: f32| -> Pos2 {
-            let v = center + (Vec2::new(x, y) + self.offset) * self.scale;
-            Pos2::new(v.x, v.y)
-        };
-
-        let mut shapes: Vec<Shape> = Vec::new();
-
-        // Draw edges first (behind nodes).
-        let node_pos: std::collections::HashMap<&str, (Pos2, Pos2)> = doc
-            .nodes
-            .iter()
-            .map(|n| {
-                let tl = project(n.x, n.y);
-                let br = project(n.x + n.width, n.y + n.height);
-                (n.id.as_str(), (tl, br))
-            })
-            .collect();
-
-        for edge in &doc.edges {
-            let (Some(from_id), Some(to_id)) = (edge.from(), edge.to()) else {
-                continue;
-            };
-            let (Some((from_tl, from_br)), Some((to_tl, to_br))) =
-                (node_pos.get(from_id), node_pos.get(to_id))
-            else {
-                continue;
-            };
-            let from_rect = Rect::from_two_pos(*from_tl, *from_br);
-            let to_rect = Rect::from_two_pos(*to_tl, *to_br);
-
-            // Resolve sides: prefer explicit `from_side` / `to_side` from
-            // the JSON; fall back to whichever side faces the other node.
-            let from_side = edge
-                .from_side_resolved()
-                .unwrap_or_else(|| infer_side(from_rect, to_rect.center()));
-            let to_side = edge
-                .to_side_resolved()
-                .unwrap_or_else(|| infer_side(to_rect, from_rect.center()));
-
-            let p0 = from_side.anchor(from_rect);
-            let p3 = to_side.anchor(to_rect);
-            let straight = (p3 - p0).length();
-            // Control-point distance scales with the straight-line distance
-            // so short edges curve tightly and long edges sweep gently.
-            let control_dist = (straight * 0.5).clamp(30.0, 240.0);
-            let p1 = p0 + from_side.outward() * control_dist;
-            let p2 = p3 + to_side.outward() * control_dist;
-
-            shapes.push(Shape::CubicBezier(CubicBezierShape::from_points_stroke(
-                [p0, p1, p2, p3],
-                false,
-                Color32::TRANSPARENT,
-                Stroke::new(1.5, accent.linear_multiply(0.7)),
-            )));
-        }
-
-        // Draw nodes. `group`-type nodes act as background containers, so
-        // paint them first — otherwise they cover any text/file nodes that
-        // happen to appear later in the JSON list.
-        let mut ordered: Vec<&CanvasNode> = doc.nodes.iter().collect();
-        ordered.sort_by_key(|n| match n.node_type.as_str() {
-            "group" => 0,
-            _ => 1,
-        });
-        // Track file-node rects for post-loop click detection. We use the
-        // painted order (same as `ordered`), then reverse-iterate so the
-        // topmost-drawn node wins on overlap — matches visual expectation.
-        let mut file_hit_rects: Vec<(Rect, String)> = Vec::new();
-
-        for node in ordered {
-            let tl = project(node.x, node.y);
-            let br = project(node.x + node.width, node.y + node.height);
-            let rect = Rect::from_two_pos(tl, br);
-
-            let is_file = node.node_type == "file";
-            let is_file_hovered = is_file
-                && response
-                    .hover_pos()
-                    .is_some_and(|p| rect.contains(p));
-
-            let (fill, stroke_color) = match node.node_type.as_str() {
-                "group" => (
-                    accent.linear_multiply(0.06),
-                    accent.linear_multiply(0.4),
-                ),
-                "link" => (
-                    Color32::from_rgba_unmultiplied(60, 100, 160, 40),
-                    Color32::from_rgb(100, 150, 220),
-                ),
-                "file" if is_file_hovered => (
-                    accent.linear_multiply(0.18),
+        // Hand off pan/zoom to `egui::Scene`. The closure draws in scene
+        // coordinates directly — no manual offset/scale projection. We
+        // widen the default `0.0..=1.0` zoom range so users can zoom in
+        // past 1:1 to read text-heavy nodes.
+        let mut clicked_file: Option<String> = None;
+        let scene_rect_snapshot = self.scene_rect;
+        Scene::new()
+            .zoom_range(Rangef::new(0.05, 5.0))
+            .show(ui, &mut self.scene_rect, |scene_ui| {
+                draw_canvas(
+                    scene_ui,
+                    &doc,
+                    directory,
                     accent,
-                ),
-                "file" => (
-                    Color32::from_rgba_unmultiplied(90, 90, 90, 60),
-                    Color32::from_rgb(160, 160, 160),
-                ),
-                _ => (
-                    ui.visuals().faint_bg_color,
-                    accent.linear_multiply(0.8),
-                ),
-            };
-
-            shapes.push(Shape::rect_filled(rect, 4.0, fill));
-            shapes.push(Shape::rect_stroke(
-                rect,
-                4.0,
-                Stroke::new(if is_file_hovered { 1.5 } else { 1.0 }, stroke_color),
-                egui::StrokeKind::Outside,
-            ));
-
-            // File nodes are navigable — swap the cursor on hover and
-            // remember the rect for click detection after the loop.
-            if is_file {
-                if let Some(file) = &node.file {
-                    if is_file_hovered {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    file_hit_rects.push((rect, file.clone()));
-                }
-            }
-
-            // Text content inside the node, if any.
-            let content = node
-                .text
-                .as_deref()
-                .or(node.label.as_deref())
-                .or(node.file.as_deref())
-                .or(node.url.as_deref());
-            if let Some(text) = content {
-                // For actual text-type nodes with a loaded notes directory
-                // and enough room to be worth the effort, render the body
-                // through the full markdown parser so *emphasis*, `code`,
-                // and `[[wiki-links]]` all work. Otherwise fall back to a
-                // scaled plain galley so tiny / non-text nodes stay legible.
-                let inner = rect.shrink(6.0);
-                let can_render_markdown = node.node_type == "text"
-                    && directory.is_some()
-                    && inner.width() > 80.0
-                    && inner.height() > 32.0;
-                if can_render_markdown {
-                    // SAFETY: checked above.
-                    let dir = directory.unwrap();
-                    render_markdown_in_node(
-                        ui,
-                        inner,
-                        text,
-                        dir,
-                        &mut clicked_file,
-                    );
-                } else {
-                    let font =
-                        egui::FontId::proportional(12.0 * self.scale.clamp(0.5, 1.5));
-                    let galley = ui.painter().layout(
-                        text.to_string(),
-                        font,
-                        ui.visuals().text_color(),
-                        (rect.width() - 12.0).max(10.0),
-                    );
-                    let text_pos = Pos2::new(rect.left() + 6.0, rect.top() + 6.0);
-                    shapes.push(Shape::galley(
-                        text_pos,
-                        galley,
-                        ui.visuals().text_color(),
-                    ));
-                }
-            }
-        }
-
-        ui.painter().extend(shapes);
-
-        // Click → open in the digital garden. Iterate the topmost-drawn
-        // first so overlapping nodes resolve to the node the user sees.
-        if response.clicked() {
-            if let Some(hp) = response.hover_pos() {
-                for (rect, file) in file_hit_rects.iter().rev() {
-                    if rect.contains(hp) {
-                        clicked_file = Some(file_to_note_id(file));
-                        break;
-                    }
-                }
-            }
-        }
+                    scene_rect_snapshot,
+                    &mut clicked_file,
+                );
+            });
 
         clicked_file
+    }
+}
+
+/// Draw the canvas inside the Scene's transformed sub-ui. All coordinates
+/// here are *scene coords* — Scene applies the visible transform on its
+/// own layer, so we draw nodes at their literal `(x, y, w, h)` positions
+/// from the JSON.
+fn draw_canvas(
+    ui: &mut Ui,
+    doc: &CanvasDocument,
+    directory: Option<&NoteDirectory>,
+    accent: Color32,
+    visible: Rect,
+    clicked_file: &mut Option<String>,
+) {
+    // Infinite dot grid backdrop, rendered in scene coords. Only draw
+    // dots that fall inside the visible scene rect, snapped to a fixed
+    // grid spacing so the pattern doesn't slide as the user pans.
+    if visible.is_finite() && visible.size() != Vec2::ZERO {
+        const GRID_STEP: f32 = 40.0;
+        let dot_color =
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 22);
+        let x_start = (visible.left() / GRID_STEP).floor() * GRID_STEP;
+        let y_start = (visible.top() / GRID_STEP).floor() * GRID_STEP;
+        let mut x = x_start;
+        while x <= visible.right() {
+            let mut y = y_start;
+            while y <= visible.bottom() {
+                ui.painter().circle_filled(Pos2::new(x, y), 1.0, dot_color);
+                y += GRID_STEP;
+            }
+            x += GRID_STEP;
+        }
+    }
+
+    let mut shapes: Vec<Shape> = Vec::new();
+
+    // Edges — drawn first so nodes paint on top.
+    let node_rects: std::collections::HashMap<&str, Rect> = doc
+        .nodes
+        .iter()
+        .map(|n| {
+            let tl = Pos2::new(n.x, n.y);
+            let br = Pos2::new(n.x + n.width, n.y + n.height);
+            (n.id.as_str(), Rect::from_two_pos(tl, br))
+        })
+        .collect();
+
+    for edge in &doc.edges {
+        let (Some(from_id), Some(to_id)) = (edge.from(), edge.to()) else {
+            continue;
+        };
+        let (Some(from_rect), Some(to_rect)) =
+            (node_rects.get(from_id), node_rects.get(to_id))
+        else {
+            continue;
+        };
+        let from_rect = *from_rect;
+        let to_rect = *to_rect;
+
+        // Resolve sides: prefer explicit `from_side` / `to_side` from
+        // the JSON; fall back to whichever side faces the other node.
+        let from_side = edge
+            .from_side_resolved()
+            .unwrap_or_else(|| infer_side(from_rect, to_rect.center()));
+        let to_side = edge
+            .to_side_resolved()
+            .unwrap_or_else(|| infer_side(to_rect, from_rect.center()));
+
+        let p0 = from_side.anchor(from_rect);
+        let p3 = to_side.anchor(to_rect);
+        let straight = (p3 - p0).length();
+        // Control-point distance scales with the straight-line distance
+        // so short edges curve tightly and long edges sweep gently.
+        let control_dist = (straight * 0.5).clamp(30.0, 240.0);
+        let p1 = p0 + from_side.outward() * control_dist;
+        let p2 = p3 + to_side.outward() * control_dist;
+
+        shapes.push(Shape::CubicBezier(CubicBezierShape::from_points_stroke(
+            [p0, p1, p2, p3],
+            false,
+            Color32::TRANSPARENT,
+            Stroke::new(1.5, accent.linear_multiply(0.7)),
+        )));
+    }
+
+    // Nodes. Render `group` types first so they sit behind everything else.
+    let mut ordered: Vec<&CanvasNode> = doc.nodes.iter().collect();
+    ordered.sort_by_key(|n| match n.node_type.as_str() {
+        "group" => 0,
+        _ => 1,
+    });
+
+    // Flush edge shapes before nodes so per-node sub-uis paint on top.
+    ui.painter().extend(std::mem::take(&mut shapes));
+
+    for node in ordered {
+        let rect = Rect::from_min_size(
+            Pos2::new(node.x, node.y),
+            Vec2::new(node.width, node.height),
+        );
+
+        // File nodes are clickable — allocate a real interactive rect so
+        // egui handles hover/cursor/click in the natural way and the
+        // Scene's background pan still works on empty space.
+        let is_file = node.node_type == "file";
+        let is_file_hovered = if is_file && node.file.is_some() {
+            let resp = ui.allocate_rect(rect, Sense::click());
+            if resp.clicked() {
+                if let Some(file) = &node.file {
+                    *clicked_file = Some(file_to_note_id(file));
+                }
+            }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            resp.hovered()
+        } else {
+            false
+        };
+
+        let (fill, stroke_color) = match node.node_type.as_str() {
+            "group" => (
+                accent.linear_multiply(0.06),
+                accent.linear_multiply(0.4),
+            ),
+            "link" => (
+                Color32::from_rgba_unmultiplied(60, 100, 160, 40),
+                Color32::from_rgb(100, 150, 220),
+            ),
+            "file" if is_file_hovered => (
+                accent.linear_multiply(0.18),
+                accent,
+            ),
+            "file" => (
+                Color32::from_rgba_unmultiplied(90, 90, 90, 60),
+                Color32::from_rgb(160, 160, 160),
+            ),
+            _ => (
+                ui.visuals().faint_bg_color,
+                accent.linear_multiply(0.8),
+            ),
+        };
+
+        // Drop shadow: a dark, semi-transparent rect offset down-right
+        // behind the node, with slightly larger corner radius. egui has
+        // no native drop-shadow primitive, so this is the cheap fake.
+        // `group` nodes act as background containers and are big — a
+        // shadow on them looks heavy, so skip those.
+        if node.node_type != "group" {
+            let shadow_rect =
+                rect.translate(Vec2::new(3.0, 4.0)).expand(0.5);
+            ui.painter().rect_filled(
+                shadow_rect,
+                5.0,
+                Color32::from_black_alpha(60),
+            );
+        }
+        ui.painter().rect_filled(rect, 4.0, fill);
+        ui.painter().rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(if is_file_hovered { 1.5 } else { 1.0 }, stroke_color),
+            egui::StrokeKind::Outside,
+        );
+
+        // Text content inside the node, if any.
+        let content = node
+            .text
+            .as_deref()
+            .or(node.label.as_deref())
+            .or(node.file.as_deref())
+            .or(node.url.as_deref());
+        if let Some(text) = content {
+            // For text-type nodes with a loaded notes directory and
+            // enough room to be worth it, render through the full
+            // markdown parser. Otherwise fall back to a fixed-size
+            // galley — Scene scales it visually for us.
+            let inner = rect.shrink(6.0);
+            let can_render_markdown = node.node_type == "text"
+                && directory.is_some()
+                && inner.width() > 80.0
+                && inner.height() > 32.0;
+            if can_render_markdown {
+                let dir = directory.unwrap();
+                render_markdown_in_node(ui, inner, text, dir, clicked_file);
+            } else {
+                let font = egui::FontId::proportional(12.0);
+                let galley = ui.painter().layout(
+                    text.to_string(),
+                    font,
+                    ui.visuals().text_color(),
+                    (rect.width() - 12.0).max(10.0),
+                );
+                let text_pos = Pos2::new(rect.left() + 6.0, rect.top() + 6.0);
+                ui.painter().add(Shape::galley(
+                    text_pos,
+                    galley,
+                    ui.visuals().text_color(),
+                ));
+            }
+        }
     }
 }
 

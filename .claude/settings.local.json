@@ -23,7 +23,17 @@
       "Bash(cargo test *)",
       "Bash(rustup target *)",
       "Bash(cargo build *)",
-      "Bash(cargo clippy *)"
+      "Bash(cargo clippy *)",
+      "Bash(mkdir -p /Users/jsh/dev/projects/gui_garden/assets/fonts)",
+      "Bash(curl -sSfL -o AtkinsonHyperlegible-Regular.ttf \"https://github.com/googlefonts/atkinson-hyperlegible/raw/main/fonts/ttf/AtkinsonHyperlegible-Regular.ttf\")",
+      "Bash(curl -sSfL -o Lora-Regular.ttf \"https://github.com/cyrealtype/Lora-Cyrillic/raw/master/fonts/ttf/Lora-Regular.ttf\")",
+      "Bash(curl -sSfL -o IBMPlexMono-Regular.ttf \"https://github.com/IBM/plex/raw/master/IBM-Plex-Mono/fonts/complete/ttf/IBMPlexMono-Regular.ttf\")",
+      "Bash(curl -sSfL -I \"https://github.com/IBM/plex\")",
+      "Bash(curl -sSfL \"https://api.github.com/repos/IBM/plex/contents/IBM-Plex-Mono/fonts/complete/ttf\")",
+      "Bash(curl -sSfL \"https://api.github.com/repos/IBM/plex/contents/\")",
+      "Bash(command -v pyftsubset)",
+      "Bash(pyftsubset --help)",
+      "Bash(python3 -c \"import fontTools\")"
     ]
   }
 }

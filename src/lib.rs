@@ -3,6 +3,7 @@
 mod about;
 mod app;
 mod apps;
+mod command_palette;
 mod digital_garden;
 mod palette;
 pub use app::TemplateApp;

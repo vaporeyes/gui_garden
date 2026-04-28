@@ -1,5 +1,9 @@
 use crate::apps::clock_button;
 use crate::apps::easy_mark;
+use crate::command_palette::{
+    CommandPalette, PaletteItem, PaletteResult, SystemAction, WindowKind, TOGGLE_SHORTCUT,
+    WINDOW_SHORTCUTS,
+};
 use crate::digital_garden::DigitalGarden;
 use eframe::egui;
 use egui::Ui;
@@ -19,6 +23,7 @@ pub struct TemplateApp {
     workouts_is_open: bool,
     binary_clock_is_open: bool,
     collections_is_open: bool,
+    bezier_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
     #[serde(skip)]
@@ -35,6 +40,8 @@ pub struct TemplateApp {
     workouts: crate::apps::Workouts,
     #[serde(skip)]
     collections: crate::apps::Collections,
+    #[serde(skip)]
+    bezier: crate::apps::BezierPlayground,
     /// DigitalGarden's runtime state is all `#[serde(skip)]` internally; the
     /// only field that persists is user preferences like the hot-reload
     /// debounce window, which survive restarts.
@@ -57,6 +64,10 @@ pub struct TemplateApp {
     /// destructive ops that drop unrecoverable state.
     #[serde(skip)]
     pending_confirm: Option<PendingConfirm>,
+    /// Cmd-K command palette. Self-contained widget; we just build its
+    /// items list each frame and dispatch the action it returns.
+    #[serde(skip)]
+    command_palette: CommandPalette,
 }
 
 /// Destructive actions that require a Modal confirmation before running.
@@ -79,6 +90,7 @@ impl Default for TemplateApp {
             workouts_is_open: false,
             binary_clock_is_open: false,
             collections_is_open: false,
+            bezier_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
             binary_clock: Default::default(),
@@ -87,6 +99,7 @@ impl Default for TemplateApp {
             canvas_view: Default::default(),
             workouts: Default::default(),
             collections: Default::default(),
+            bezier: Default::default(),
             digital_garden: DigitalGarden::default(),
             notes_directory_path: String::new(),
             workouts_path: String::new(),
@@ -94,6 +107,7 @@ impl Default for TemplateApp {
             notes_directory_error: None,
             output_event_history: Default::default(),
             pending_confirm: None,
+            command_palette: CommandPalette::default(),
         }
     }
 }
@@ -103,6 +117,12 @@ impl TemplateApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // This is also where you can customized the look at feel of egui using
         // `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
+
+        // Custom font stack: Atkinson Hyperlegible for UI sans, Lora for
+        // markdown body/heading via a custom `FontFamily::Name("Serif")`,
+        // IBM Plex Mono for code blocks, the binary clock, and inline
+        // code spans. All three are SIL OFL licensed.
+        install_fonts(&cc.egui_ctx);
 
         // Load previous app state (if any).
         // Note that you must enable the `persistence` feature for this to work.
@@ -148,6 +168,125 @@ impl TemplateApp {
         app.digital_garden.apply_url_fragment_if_any();
 
         app
+    }
+
+    /// Build the palette item list from current app state, render the
+    /// palette, and dispatch any committed action.
+    fn render_command_palette(&mut self, ctx: &egui::Context) {
+        if !self.command_palette.open {
+            return;
+        }
+        let mut items: Vec<PaletteItem> = Vec::new();
+        // Windows — every togglable surface in the app.
+        for w in [
+            WindowKind::DigitalGarden,
+            WindowKind::About,
+            WindowKind::Resume,
+            WindowKind::Projects,
+            WindowKind::Calculator,
+            WindowKind::BinaryClock,
+            WindowKind::Canvas,
+            WindowKind::Workouts,
+            WindowKind::Collections,
+            WindowKind::Bezier,
+            WindowKind::AppEvents,
+        ] {
+            items.push(PaletteItem::Window(w));
+        }
+        // System actions.
+        for s in [
+            SystemAction::OrganizeWindows,
+            SystemAction::ZoomIn,
+            SystemAction::ZoomOut,
+            SystemAction::ResetZoom,
+        ] {
+            items.push(PaletteItem::System(s));
+        }
+        // Notes — only when a directory is loaded. Recent notes go first
+        // (newest-first, deduped) so an empty-query Cmd+K → Enter jumps
+        // back to the last note. The palette's stable sort by score
+        // preserves this ordering on ties; for non-empty queries, recents
+        // simply get a small ranking nudge over equally-scored matches.
+        if let Some(dir) = self.digital_garden.note_directory.as_ref() {
+            let recent_ids: Vec<String> = self.digital_garden.recent_notes(5);
+            let mut seen: std::collections::HashSet<String> = Default::default();
+            for id in &recent_ids {
+                if let Some(note) = dir.get_note(id) {
+                    seen.insert(id.clone());
+                    items.push(PaletteItem::Note {
+                        id: note.id.clone(),
+                        title: note.title(),
+                    });
+                }
+            }
+            for note in dir.published_notes() {
+                if seen.contains(&note.id) {
+                    continue;
+                }
+                items.push(PaletteItem::Note {
+                    id: note.id.clone(),
+                    title: note.title(),
+                });
+            }
+        }
+
+        let Some(result) = self.command_palette.ui(ctx, items) else {
+            return;
+        };
+        match result {
+            PaletteResult::OpenWindow(kind) => self.set_window_open(kind),
+            PaletteResult::OpenNote(id) => {
+                if self.digital_garden.load_note(&id).is_some() {
+                    self.digital_garden_is_open = true;
+                }
+            }
+            PaletteResult::System(action) => match action {
+                SystemAction::OrganizeWindows => {
+                    ctx.memory_mut(|mem| mem.reset_areas());
+                }
+                SystemAction::ZoomIn => egui::gui_zoom::zoom_in(ctx),
+                SystemAction::ZoomOut => egui::gui_zoom::zoom_out(ctx),
+                SystemAction::ResetZoom => ctx.set_zoom_factor(1.0),
+            },
+        }
+    }
+
+    fn set_window_open(&mut self, kind: WindowKind) {
+        *self.window_flag_mut(kind) = true;
+    }
+
+    /// Toggle a window between open/closed. Driven by the Cmd+N
+    /// keyboard shortcuts so a second press dismisses the window.
+    fn toggle_window_open(&mut self, kind: WindowKind) {
+        let flag = self.window_flag_mut(kind);
+        *flag = !*flag;
+    }
+
+    /// Render one sidebar row: a `selectable_label` whose highlight
+    /// reflects whether the window is open, and whose click toggles it.
+    /// Pulls the open-state through `WindowKind` so the sidebar, palette,
+    /// and Cmd+N shortcuts share a single dispatch.
+    fn sidebar_toggle(&mut self, ui: &mut Ui, kind: WindowKind, label: &str) {
+        let is_open = *self.window_flag_mut(kind);
+        if ui.selectable_label(is_open, label).clicked() {
+            self.toggle_window_open(kind);
+        }
+    }
+
+    fn window_flag_mut(&mut self, kind: WindowKind) -> &mut bool {
+        match kind {
+            WindowKind::About => &mut self.about_is_open,
+            WindowKind::Calculator => &mut self.calc_is_open,
+            WindowKind::Resume => &mut self.resume_is_open,
+            WindowKind::DigitalGarden => &mut self.digital_garden_is_open,
+            WindowKind::Projects => &mut self.projects_is_open,
+            WindowKind::Canvas => &mut self.canvas_is_open,
+            WindowKind::Workouts => &mut self.workouts_is_open,
+            WindowKind::Collections => &mut self.collections_is_open,
+            WindowKind::BinaryClock => &mut self.binary_clock_is_open,
+            WindowKind::Bezier => &mut self.bezier_is_open,
+            WindowKind::AppEvents => &mut self.events_is_open,
+        }
     }
 
     /// Render the confirmation modal for any in-flight destructive op.
@@ -215,6 +354,24 @@ impl eframe::App for TemplateApp {
         // egui 0.34: `Ui` derefs to `Context`, but we still need a clonable
         // handle for `Window::show(ctx, ...)` further down.
         let ctx = ui.ctx().clone();
+
+        // Cmd-K / Ctrl-K toggles the command palette. `consume_shortcut`
+        // checks atomically and clears the press so other handlers don't
+        // also fire on the same keystroke.
+        if ctx.input_mut(|i| i.consume_shortcut(&TOGGLE_SHORTCUT)) {
+            if self.command_palette.open {
+                self.command_palette.close();
+            } else {
+                self.command_palette.open();
+            }
+        }
+        // Cmd+1..5 toggle the most-used windows. Same consume-and-clear
+        // pattern as the palette shortcut.
+        for (shortcut, kind) in WINDOW_SHORTCUTS {
+            if ctx.input_mut(|i| i.consume_shortcut(shortcut)) {
+                self.toggle_window_open(*kind);
+            }
+        }
         // Re-stamp the theme on every frame so the whole app chrome — top
         // panel, outer sidebar, window frames — picks up the named palette
         // (and any runtime Poline tinting) regardless of which window the
@@ -254,57 +411,25 @@ impl eframe::App for TemplateApp {
                     egui::warn_if_debug_build(ui);
 
                     // `selectable_label` toggle-highlights when its flag is
-                    // true, so the sidebar can show at a glance which
-                    // windows are currently open. Clicking still opens the
-                    // window; we don't wire a close action here so the
-                    // user can still hit the window's X to close.
+                    // true, so the sidebar shows at a glance which windows
+                    // are open. Clicking now toggles: a second click on a
+                    // highlighted label closes the window. Window's X
+                    // button also still works.
                     sidebar_section(ui, "identity", accent);
-                    if ui.selectable_label(self.about_is_open, "About Me").clicked() {
-                        self.about_is_open = true;
-                    }
-                    if ui
-                        .selectable_label(self.resume_is_open, "Pseudo-Resumé")
-                        .clicked()
-                    {
-                        self.resume_is_open = true;
-                    }
-                    if ui.selectable_label(self.projects_is_open, "Projects").clicked() {
-                        self.projects_is_open = true;
-                    }
+                    self.sidebar_toggle(ui, WindowKind::About, "About Me");
+                    self.sidebar_toggle(ui, WindowKind::Resume, "Pseudo-Resumé");
+                    self.sidebar_toggle(ui, WindowKind::Projects, "Projects");
 
                     sidebar_section(ui, "tools", accent);
-                    if ui.selectable_label(self.calc_is_open, "Calculator").clicked() {
-                        self.calc_is_open = true;
-                    }
-                    if ui
-                        .selectable_label(self.binary_clock_is_open, "Binary Clock")
-                        .clicked()
-                    {
-                        self.binary_clock_is_open = true;
-                    }
-                    if ui.selectable_label(self.canvas_is_open, "Canvas").clicked() {
-                        self.canvas_is_open = true;
-                    }
-                    if ui
-                        .selectable_label(self.workouts_is_open, "Workouts")
-                        .clicked()
-                    {
-                        self.workouts_is_open = true;
-                    }
-                    if ui
-                        .selectable_label(self.collections_is_open, "Collections")
-                        .clicked()
-                    {
-                        self.collections_is_open = true;
-                    }
+                    self.sidebar_toggle(ui, WindowKind::Calculator, "Calculator");
+                    self.sidebar_toggle(ui, WindowKind::BinaryClock, "Binary Clock");
+                    self.sidebar_toggle(ui, WindowKind::Canvas, "Canvas");
+                    self.sidebar_toggle(ui, WindowKind::Workouts, "Workouts");
+                    self.sidebar_toggle(ui, WindowKind::Collections, "Collections");
+                    self.sidebar_toggle(ui, WindowKind::Bezier, "Bezier");
 
                     sidebar_section(ui, "notes", accent);
-                    if ui
-                        .selectable_label(self.digital_garden_is_open, "Digital Garden")
-                        .clicked()
-                    {
-                        self.digital_garden_is_open = true;
-                    }
+                    self.sidebar_toggle(ui, WindowKind::DigitalGarden, "Digital Garden");
                     if self.digital_garden.note_directory.is_some()
                         && ui.button("Change notes folder").clicked()
                     {
@@ -315,9 +440,7 @@ impl eframe::App for TemplateApp {
                     }
 
                     sidebar_section(ui, "system", accent);
-                    if ui.selectable_label(self.events_is_open, "App Events").clicked() {
-                        self.events_is_open = true;
-                    }
+                    self.sidebar_toggle(ui, WindowKind::AppEvents, "App Events");
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
@@ -334,6 +457,11 @@ impl eframe::App for TemplateApp {
         }
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
+            // 4-corner mesh gradient drawn behind the fractal clock and
+            // the "My Digital Garden" heading. Color anchors come from
+            // `palette::anchors_for_now`, so the backdrop drifts through
+            // the day in step with the rest of the named-theme system.
+            paint_ambient_gradient(ui);
             self.fractal_clock.ui(ui, Some(seconds_since_midnight()));
             ui.vertical_centered(|ui| {
                 ui.heading("🏡 My Digital Garden");
@@ -409,6 +537,12 @@ impl eframe::App for TemplateApp {
             .default_width(720.0)
             .default_height(640.0)
             .show(&ctx, |ui| self.collections.ui(ui));
+
+        egui::Window::new("Bezier Playground")
+            .open(&mut self.bezier_is_open)
+            .default_width(560.0)
+            .default_height(520.0)
+            .show(&ctx, |ui| self.bezier.ui(ui));
         if let Some(p) = self.workouts.loaded_path() {
             let s = p.to_string_lossy().to_string();
             if s != self.workouts_path {
@@ -461,6 +595,7 @@ impl eframe::App for TemplateApp {
             });
 
         self.render_pending_confirm(&ctx);
+        self.render_command_palette(&ctx);
     }
 
 
@@ -539,6 +674,100 @@ fn file_menu_button(
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     });
+}
+
+/// Register the bundled OFL fonts and place them at the front of each
+/// family list. We keep the egui defaults around as fallbacks for
+/// glyphs our chosen fonts don't cover (most notably emoji, which
+/// `epaint_default_fonts` ships via NotoEmoji).
+///
+/// Font slots:
+/// * `FontFamily::Proportional` → Atkinson Hyperlegible (UI chrome,
+///   sidebar, buttons)
+/// * `FontFamily::Name("Serif")` → Lora (markdown body + headings)
+/// * `FontFamily::Monospace` → IBM Plex Mono (code blocks, inline
+///   code, the calculator readout, the binary clock numerals)
+fn install_fonts(ctx: &egui::Context) {
+    use std::sync::Arc;
+
+    let mut fonts = egui::FontDefinitions::default();
+
+    fonts.font_data.insert(
+        "atkinson".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/AtkinsonHyperlegible-Regular.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        "lora".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Lora-Variable.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        "plex_mono".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/IBMPlexMono-Regular.ttf"
+        ))),
+    );
+
+    // Insert at the front of each family so our font is preferred but
+    // egui's bundled fonts still resolve glyphs ours don't have.
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "atkinson".to_owned());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .insert(0, "plex_mono".to_owned());
+    // Custom serif family — used by `markdown_parser` for body text and
+    // headings via `FontId::new(size, FontFamily::Name("Serif".into()))`.
+    fonts.families.insert(
+        egui::FontFamily::Name("Serif".into()),
+        vec![
+            "lora".to_owned(),
+            "atkinson".to_owned(),
+        ],
+    );
+
+    ctx.set_fonts(fonts);
+}
+
+/// Paint a 4-corner mesh gradient that fills the central panel. Each
+/// corner gets a heavily darkened tint from one of the time-of-day
+/// anchors so the backdrop reads as ambient depth, not a flat fill.
+fn paint_ambient_gradient(ui: &mut egui::Ui) {
+    let rect = ui.max_rect();
+    let (a, b) = crate::palette::anchors_for_now();
+    let a = a.to_color32();
+    let b = b.to_color32();
+    // Mute hard so the gradient sits *behind* foreground content. Without
+    // this the heading and fractal clock get washed by the saturation.
+    let dim = |c: egui::Color32, k: f32| -> egui::Color32 {
+        egui::Color32::from_rgba_unmultiplied(
+            ((c.r() as f32) * k) as u8,
+            ((c.g() as f32) * k) as u8,
+            ((c.b() as f32) * k) as u8,
+            255,
+        )
+    };
+    let tl = dim(a, 0.18);
+    let tr = dim(b, 0.12);
+    let bl = dim(b, 0.10);
+    let br = dim(a, 0.22);
+
+    let mut mesh = egui::epaint::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), tl);
+    mesh.colored_vertex(rect.right_top(), tr);
+    mesh.colored_vertex(rect.right_bottom(), br);
+    mesh.colored_vertex(rect.left_bottom(), bl);
+    // Two triangles forming the quad (CCW): TL-TR-BR, TL-BR-BL.
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(egui::Shape::mesh(mesh));
 }
 
 pub fn is_mobile(ctx: &egui::Context) -> bool {
