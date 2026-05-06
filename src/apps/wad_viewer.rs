@@ -71,10 +71,11 @@ pub struct WadViewer {
     /// Active visualization mode — gates which elements are
     /// foregrounded vs. dimmed in `draw_map`.
     mode: ViewMode,
-    /// Currently inspected element. Set by clicking; cleared by
+    /// Currently inspected element(s). A plain click replaces the
+    /// list; Shift+click toggles individual entries. Cleared by
     /// clicking empty space, switching to an incompatible mode, or
-    /// pressing Escape.
-    selected: Option<Selection>,
+    /// pressing Escape. When empty, the right rail shows map stats.
+    selected: Vec<Selection>,
 }
 
 // `Loaded` carries the full parsed Map (vertexes/linedefs/sidedefs/
@@ -103,7 +104,7 @@ impl Default for WadViewer {
             scene_rect: Rect::ZERO,
             show_decorations: false,
             mode: ViewMode::Map,
-            selected: None,
+            selected: Vec::new(),
         }
     }
 }
@@ -218,12 +219,10 @@ impl WadViewer {
             for (mode, label) in ViewMode::ALL {
                 ui.selectable_value(&mut self.mode, *mode, *label);
             }
-            // After the row updates, drop the selection if it doesn't
-            // belong in the new mode (e.g. a Thing selected, then user
+            // After the row updates, drop selections that don't
+            // belong in the new mode (e.g. things selected, then user
             // jumps to Sectors).
-            if !mode_keeps_selection(self.mode, self.selected) {
-                self.selected = None;
-            }
+            self.selected.retain(|sel| mode_keeps_selection(self.mode, *sel));
             if matches!(self.mode, ViewMode::Map | ViewMode::Things) {
                 ui.separator();
                 ui.checkbox(&mut self.show_decorations, "Decorations");
@@ -256,22 +255,22 @@ impl WadViewer {
                 let map = map.clone();
                 let show_decorations = self.show_decorations;
                 let mode = self.mode;
-                let selected = self.selected;
-                // Right-side info panel — branches by selection variant.
-                if let Some(sel) = selected {
-                    let mut close = false;
-                    egui::Panel::right("wad_inspector")
-                        .resizable(false)
-                        .default_size(240.0)
-                        .show_inside(ui, |ui| {
-                            close = draw_inspector(ui, &map, sel);
-                        });
-                    if close {
-                        self.selected = None;
-                    }
+                let selected = self.selected.clone();
+                // Right-side panel: stats when nothing is selected,
+                // single-element inspector when one, aggregate
+                // summary when multiple.
+                let mut close = false;
+                egui::Panel::right("wad_inspector")
+                    .resizable(false)
+                    .default_size(260.0)
+                    .show_inside(ui, |ui| {
+                        close = draw_right_panel(ui, &map, &selected);
+                    });
+                if close {
+                    self.selected.clear();
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    self.selected = None;
+                    self.selected.clear();
                 }
                 // Predict the scene viewport before Scene grabs it,
                 // so the wheel-zoom intercept can hit-test
@@ -281,12 +280,73 @@ impl WadViewer {
                 let inner = Scene::new()
                     .zoom_range(Rangef::new(0.005, 5.0))
                     .show(ui, &mut self.scene_rect, |scene_ui| {
-                        draw_map(scene_ui, &map, mode, show_decorations, selected);
+                        draw_map(scene_ui, &map, mode, show_decorations, &selected);
                     });
                 if inner.response.clicked() {
-                    self.selected =
-                        hit_test_for_mode(&map, &inner.response, self.scene_rect, mode);
+                    let hit = hit_test_for_mode(
+                        &map,
+                        &inner.response,
+                        self.scene_rect,
+                        mode,
+                    );
+                    let shift =
+                        inner.response.ctx.input(|i| i.modifiers.shift);
+                    match (hit, shift) {
+                        // Shift+click: toggle the hit in/out of the
+                        // selection. Misses on shift do nothing
+                        // (preserves existing selection).
+                        (Some(sel), true) => {
+                            if let Some(pos) =
+                                self.selected.iter().position(|s| *s == sel)
+                            {
+                                self.selected.remove(pos);
+                            } else {
+                                self.selected.push(sel);
+                            }
+                        }
+                        // Plain click: replace selection with the hit
+                        // (or clear if it missed).
+                        (Some(sel), false) => {
+                            self.selected.clear();
+                            self.selected.push(sel);
+                        }
+                        (None, false) => self.selected.clear(),
+                        (None, true) => {} // shift+miss = no-op
+                    }
                 }
+                // Hover tooltip — show the name of whatever's under
+                // the cursor without requiring a click.
+                if let Some(cursor) = inner.response.hover_pos() {
+                    let outer = inner.response.rect;
+                    if let Some(hovered) =
+                        hover_for_mode(&map, cursor, outer, self.scene_rect, mode)
+                    {
+                        egui::Tooltip::always_open(
+                            ui.ctx().clone(),
+                            ui.layer_id(),
+                            egui::Id::new("wad_hover_tooltip"),
+                            cursor,
+                        )
+                        .at_pointer()
+                        .show(|ui| {
+                            ui.label(
+                                egui::RichText::new(selection_summary(&map, hovered))
+                                    .small(),
+                            );
+                        });
+                    }
+                }
+                // Status bar at the bottom of the canvas — cursor in
+                // map coords, current zoom, map name. Painted on top
+                // of the scene area as a small overlay so it doesn't
+                // eat layout space.
+                draw_status_bar(
+                    ui,
+                    &map,
+                    inner.response.hover_pos(),
+                    inner.response.rect,
+                    self.scene_rect,
+                );
             }
         }
     }
@@ -398,7 +458,7 @@ fn draw_map(
     map: &Map,
     mode: ViewMode,
     show_decorations: bool,
-    selected: Option<Selection>,
+    selected: &[Selection],
 ) {
     // Force Scene's auto-fit to see the actual map extent. See
     // `scene_bbox` rationale below.
@@ -408,23 +468,30 @@ fn draw_map(
     let style = mode.geometry_style();
     draw_linedefs(ui, map, mode, &style);
 
-    let selected_thing = match selected {
-        Some(Selection::Thing(i)) => Some(i),
-        _ => None,
-    };
+    // Set of selected thing indices, for the per-thing render pass.
+    let selected_things: std::collections::HashSet<usize> = selected
+        .iter()
+        .filter_map(|s| match s {
+            Selection::Thing(i) => Some(*i),
+            _ => None,
+        })
+        .collect();
     match mode {
         ViewMode::Map | ViewMode::Things => {
-            draw_things(ui, map, show_decorations, 1.0, selected_thing);
+            draw_things(ui, map, show_decorations, 1.0, &selected_things);
         }
         ViewMode::Linedefs | ViewMode::Sectors => {}
         ViewMode::Vertices => draw_vertices(ui, map),
     }
 
     // Selection overlay — drawn last so it sits above everything.
-    match selected {
-        Some(Selection::Linedef(i)) => draw_selected_linedef(ui, map, i),
-        Some(Selection::Sector(s)) => draw_selected_sector(ui, map, s),
-        _ => {}
+    // Iterate so that multi-select highlights all chosen elements.
+    for sel in selected {
+        match sel {
+            Selection::Linedef(i) => draw_selected_linedef(ui, map, *i),
+            Selection::Sector(s) => draw_selected_sector(ui, map, *s),
+            Selection::Thing(_) => {} // ring is drawn inside `draw_things`
+        }
     }
 }
 
@@ -480,7 +547,7 @@ fn draw_things(
     map: &Map,
     show_decorations: bool,
     alpha: f32,
-    selected: Option<usize>,
+    selected: &std::collections::HashSet<usize>,
 ) {
     let painter = ui.painter();
     for (i, t) in map.things.iter().enumerate() {
@@ -505,7 +572,7 @@ fn draw_things(
         // Selection ring — drawn after the dot so it sits on top.
         // Cyan matches the linedef/sector highlight for a consistent
         // "this is selected" cue across all three modes.
-        if Some(i) == selected {
+        if selected.contains(&i) {
             painter.circle_stroke(
                 p,
                 radius + 4.0,
@@ -523,13 +590,10 @@ fn draw_things(
     }
 }
 
-/// Did the new mode permit keeping `sel` as the active selection?
+/// Whether the given mode can keep this kind of selection alive.
 /// Map allows everything (it's the catch-all view); the specialized
 /// modes only keep their own kind.
-fn mode_keeps_selection(mode: ViewMode, sel: Option<Selection>) -> bool {
-    let Some(sel) = sel else {
-        return true;
-    };
+fn mode_keeps_selection(mode: ViewMode, sel: Selection) -> bool {
     matches!(
         (mode, sel),
         (ViewMode::Map, _)
@@ -537,6 +601,123 @@ fn mode_keeps_selection(mode: ViewMode, sel: Option<Selection>) -> bool {
             | (ViewMode::Linedefs, Selection::Linedef(_))
             | (ViewMode::Sectors, Selection::Sector(_))
     )
+}
+
+/// What's under the cursor for the given mode, ignoring click state.
+/// Used by the hover-tooltip path so the user can preview a
+/// thing/linedef/sector without having to click first.
+fn hover_for_mode(
+    map: &Map,
+    cursor: Pos2,
+    outer: Rect,
+    scene_rect: Rect,
+    mode: ViewMode,
+) -> Option<Selection> {
+    match mode {
+        ViewMode::Map => hover_thing_at(map, cursor, outer, scene_rect)
+            .map(Selection::Thing)
+            .or_else(|| {
+                hover_linedef_at(map, cursor, outer, scene_rect).map(Selection::Linedef)
+            }),
+        ViewMode::Things => {
+            hover_thing_at(map, cursor, outer, scene_rect).map(Selection::Thing)
+        }
+        ViewMode::Linedefs => {
+            hover_linedef_at(map, cursor, outer, scene_rect).map(Selection::Linedef)
+        }
+        ViewMode::Sectors => {
+            let ld_idx = hover_linedef_at(map, cursor, outer, scene_rect)?;
+            let ld = map.linedefs.get(ld_idx)?;
+            map.sector_of_right_side(ld).map(Selection::Sector)
+        }
+        ViewMode::Vertices => None,
+    }
+}
+
+fn hover_thing_at(
+    map: &Map,
+    cursor: Pos2,
+    outer: Rect,
+    scene_rect: Rect,
+) -> Option<usize> {
+    let (scene_pt, radius) = cursor_and_radius_at(cursor, outer, scene_rect, 8.0)?;
+    let r2 = radius * radius;
+    let mut best: Option<(usize, f32)> = None;
+    for (i, t) in map.things.iter().enumerate() {
+        let dx = scene_pt.x - t.x as f32;
+        let dy = scene_pt.y - (-t.y as f32);
+        let d2 = dx * dx + dy * dy;
+        if d2 <= r2 && best.is_none_or(|(_, bd2)| d2 < bd2) {
+            best = Some((i, d2));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+fn hover_linedef_at(
+    map: &Map,
+    cursor: Pos2,
+    outer: Rect,
+    scene_rect: Rect,
+) -> Option<usize> {
+    let (scene_pt, radius) = cursor_and_radius_at(cursor, outer, scene_rect, 6.0)?;
+    let r2 = radius * radius;
+    let mut best: Option<(usize, f32)> = None;
+    for (i, ld) in map.linedefs.iter().enumerate() {
+        let (Some(va), Some(vb)) = (
+            map.vertexes.get(ld.v1 as usize),
+            map.vertexes.get(ld.v2 as usize),
+        ) else {
+            continue;
+        };
+        let a = Pos2::new(va.x as f32, -va.y as f32);
+        let b = Pos2::new(vb.x as f32, -vb.y as f32);
+        let d2 = dist_point_segment_sq(scene_pt, a, b);
+        if d2 <= r2 && best.is_none_or(|(_, bd2)| d2 < bd2) {
+            best = Some((i, d2));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
+/// One-line label for a Selection — used by the hover tooltip.
+fn selection_summary(map: &Map, sel: Selection) -> String {
+    match sel {
+        Selection::Thing(i) => match map.things.get(i) {
+            Some(t) => thing_type_name(t.doom_type)
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| format!("Type {}", t.doom_type)),
+            None => format!("Thing #{} (invalid)", i),
+        },
+        Selection::Linedef(i) => match map.linedefs.get(i) {
+            Some(ld) => {
+                let kind = if ld.two_sided() { "2-sided" } else { "1-sided" };
+                let special = linedef_special_name(ld.special)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        if ld.special == 0 {
+                            "(none)".to_string()
+                        } else {
+                            format!("#{}", ld.special)
+                        }
+                    });
+                format!("Linedef #{}  ·  {}  ·  {}", i, kind, special)
+            }
+            None => format!("Linedef #{} (invalid)", i),
+        },
+        Selection::Sector(i) => match map.sectors.get(i as usize) {
+            Some(s) => {
+                let special = sector_special_name(s.special)
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| format!("#{}", s.special));
+                format!(
+                    "Sector #{}  ·  floor {}, ceil {}  ·  {}",
+                    i, s.floor_height, s.ceiling_height, special
+                )
+            }
+            None => format!("Sector #{} (invalid)", i),
+        },
+    }
 }
 
 /// Top-level click dispatcher. Each mode picks the right kind of
@@ -578,8 +759,18 @@ fn cursor_and_radius(
     scene_rect: Rect,
     pixel_radius: f32,
 ) -> Option<(Pos2, f32)> {
-    let cursor = response.interact_pointer_pos()?;
-    let outer = response.rect;
+    cursor_and_radius_at(response.interact_pointer_pos()?, response.rect, scene_rect, pixel_radius)
+}
+
+/// Hover variant — uses the explicit cursor position instead of the
+/// click position, so callers can hit-test against `hover_pos()` for
+/// tooltips without needing an active click.
+fn cursor_and_radius_at(
+    cursor: Pos2,
+    outer: Rect,
+    scene_rect: Rect,
+    pixel_radius: f32,
+) -> Option<(Pos2, f32)> {
     if outer.width() <= 0.0 || outer.height() <= 0.0 {
         return None;
     }
@@ -740,10 +931,23 @@ fn hit_test_thing(map: &Map, response: &egui::Response, scene_rect: Rect) -> Opt
     best.map(|(i, _)| i)
 }
 
-/// Inspector dispatcher — branches on the selection variant. Each
-/// arm renders into the same right-rail panel and returns `true` when
-/// the close button was clicked.
-fn draw_inspector(ui: &mut Ui, map: &Map, sel: Selection) -> bool {
+/// Right-rail panel content. Shows map stats when nothing is
+/// selected, the per-element inspector when one item is selected,
+/// and an aggregate summary when two or more are selected. Returns
+/// `true` if the user clicked the panel's close button (which
+/// clears the selection).
+fn draw_right_panel(ui: &mut Ui, map: &Map, sel: &[Selection]) -> bool {
+    match sel.len() {
+        0 => {
+            draw_map_stats(ui, map);
+            false
+        }
+        1 => draw_inspector_single(ui, map, sel[0]),
+        _ => draw_inspector_aggregate(ui, map, sel),
+    }
+}
+
+fn draw_inspector_single(ui: &mut Ui, map: &Map, sel: Selection) -> bool {
     match sel {
         Selection::Thing(idx) => match map.things.get(idx) {
             Some(t) => draw_thing_info(ui, t),
@@ -758,6 +962,230 @@ fn draw_inspector(ui: &mut Ui, map: &Map, sel: Selection) -> bool {
             None => placeholder_inspector(ui, "Sector index out of range"),
         },
     }
+}
+
+/// Aggregate inspector for shift-click multi-selection. Shows total
+/// count + per-kind breakdowns; for things, also breaks down by
+/// category; for linedefs, sums total length; for sectors, sums the
+/// floor area proxy (count of bounding linedefs).
+fn draw_inspector_aggregate(ui: &mut Ui, map: &Map, sel: &[Selection]) -> bool {
+    let mut close = false;
+    egui::Sides::new().show(
+        ui,
+        |ui| {
+            ui.heading(format!("{} selected", sel.len()));
+        },
+        |ui| {
+            if ui.button("✕").on_hover_text("Clear selection (Esc)").clicked() {
+                close = true;
+            }
+        },
+    );
+    ui.add_space(8.0);
+
+    let (n_things, n_lines, n_sectors) = sel.iter().fold((0, 0, 0), |acc, s| match s {
+        Selection::Thing(_) => (acc.0 + 1, acc.1, acc.2),
+        Selection::Linedef(_) => (acc.0, acc.1 + 1, acc.2),
+        Selection::Sector(_) => (acc.0, acc.1, acc.2 + 1),
+    });
+
+    egui::Grid::new("wad_aggregate_grid")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            if n_things > 0 {
+                ui.label(egui::RichText::new("Things").weak());
+                ui.label(format!("{}", n_things));
+                ui.end_row();
+            }
+            if n_lines > 0 {
+                ui.label(egui::RichText::new("Linedefs").weak());
+                ui.label(format!("{}", n_lines));
+                ui.end_row();
+                let total_len: f32 = sel
+                    .iter()
+                    .filter_map(|s| match s {
+                        Selection::Linedef(i) => map.linedefs.get(*i),
+                        _ => None,
+                    })
+                    .filter_map(|ld| {
+                        let a = map.vertexes.get(ld.v1 as usize)?;
+                        let b = map.vertexes.get(ld.v2 as usize)?;
+                        let dx = (b.x - a.x) as f32;
+                        let dy = (b.y - a.y) as f32;
+                        Some((dx * dx + dy * dy).sqrt())
+                    })
+                    .sum();
+                ui.label(egui::RichText::new("Total length").weak());
+                ui.label(format!("{:.0} units", total_len));
+                ui.end_row();
+            }
+            if n_sectors > 0 {
+                ui.label(egui::RichText::new("Sectors").weak());
+                ui.label(format!("{}", n_sectors));
+                ui.end_row();
+            }
+        });
+
+    if n_things > 0 {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Thing breakdown").small().weak());
+        let mut buckets: std::collections::BTreeMap<&'static str, u32> =
+            Default::default();
+        for s in sel {
+            if let Selection::Thing(i) = s {
+                if let Some(t) = map.things.get(*i) {
+                    let cat = ThingCategory::classify(t.doom_type);
+                    *buckets.entry(category_label(cat)).or_default() += 1;
+                }
+            }
+        }
+        for (cat, count) in buckets {
+            ui.label(format!("• {} × {}", cat, count));
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new("Shift+click items to add or remove.")
+            .small()
+            .weak(),
+    );
+
+    close
+}
+
+fn category_label(cat: ThingCategory) -> &'static str {
+    match cat {
+        ThingCategory::PlayerStart => "Player starts",
+        ThingCategory::Monster => "Monsters",
+        ThingCategory::Weapon => "Weapons",
+        ThingCategory::Ammo => "Ammo",
+        ThingCategory::HealthArmor => "Health/armor",
+        ThingCategory::Key => "Keys",
+        ThingCategory::Decoration => "Decorations",
+        ThingCategory::Other => "Other",
+    }
+}
+
+/// Map info card — shown when the selection is empty. A condensed
+/// version of the level: counts by category, secret count, dimensions.
+fn draw_map_stats(ui: &mut Ui, map: &Map) {
+    ui.heading(&map.name);
+    ui.add_space(8.0);
+
+    // Tally things by category.
+    let mut cat_counts: [u32; 8] = [0; 8];
+    for t in &map.things {
+        let i = match ThingCategory::classify(t.doom_type) {
+            ThingCategory::PlayerStart => 0,
+            ThingCategory::Monster => 1,
+            ThingCategory::Weapon => 2,
+            ThingCategory::Ammo => 3,
+            ThingCategory::HealthArmor => 4,
+            ThingCategory::Key => 5,
+            ThingCategory::Decoration => 6,
+            ThingCategory::Other => 7,
+        };
+        cat_counts[i] += 1;
+    }
+    let secrets = map
+        .sectors
+        .iter()
+        .filter(|s| s.special == 9)
+        .count();
+    let damage_floors = map
+        .sectors
+        .iter()
+        .filter(|s| matches!(s.special, 4 | 5 | 7 | 11 | 16))
+        .count();
+    let two_sided = map.linedefs.iter().filter(|ld| ld.two_sided()).count();
+    let total_wall_len: f32 = map
+        .linedefs
+        .iter()
+        .filter_map(|ld| {
+            let a = map.vertexes.get(ld.v1 as usize)?;
+            let b = map.vertexes.get(ld.v2 as usize)?;
+            let dx = (b.x - a.x) as f32;
+            let dy = (b.y - a.y) as f32;
+            Some((dx * dx + dy * dy).sqrt())
+        })
+        .sum();
+    let bb = map.bbox;
+    let dims = (
+        (bb.max_x - bb.min_x) as i64,
+        (bb.max_y - bb.min_y) as i64,
+    );
+
+    ui.label(egui::RichText::new("Geometry").small().weak());
+    egui::Grid::new("wad_stats_geom")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new("Vertices").weak());
+            ui.label(format!("{}", map.vertexes.len()));
+            ui.end_row();
+
+            ui.label(egui::RichText::new("Linedefs").weak());
+            ui.label(format!("{} ({} two-sided)", map.linedefs.len(), two_sided));
+            ui.end_row();
+
+            ui.label(egui::RichText::new("Sectors").weak());
+            ui.label(format!("{}", map.sectors.len()));
+            ui.end_row();
+
+            ui.label(egui::RichText::new("Wall length").weak());
+            ui.label(format!("{:.0} units", total_wall_len));
+            ui.end_row();
+
+            ui.label(egui::RichText::new("Dimensions").weak());
+            ui.label(format!("{} × {}", dims.0, dims.1));
+            ui.end_row();
+        });
+
+    ui.add_space(8.0);
+    ui.label(egui::RichText::new("Things").small().weak());
+    egui::Grid::new("wad_stats_things")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            let labels = [
+                "Player starts",
+                "Monsters",
+                "Weapons",
+                "Ammo",
+                "Health/armor",
+                "Keys",
+                "Decorations",
+                "Other",
+            ];
+            for (label, count) in labels.iter().zip(cat_counts.iter()) {
+                if *count == 0 {
+                    continue;
+                }
+                ui.label(egui::RichText::new(*label).weak());
+                ui.label(format!("{}", count));
+                ui.end_row();
+            }
+        });
+
+    if secrets > 0 || damage_floors > 0 {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Sector specials").small().weak());
+        if secrets > 0 {
+            ui.label(format!("• {} secret sector(s)", secrets));
+        }
+        if damage_floors > 0 {
+            ui.label(format!("• {} damaging floor(s)", damage_floors));
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new("Click an element on the map to inspect.\nShift+click to multi-select.")
+            .small()
+            .weak(),
+    );
 }
 
 fn placeholder_inspector(ui: &mut Ui, msg: &str) -> bool {
@@ -1064,6 +1492,63 @@ fn with_alpha(c: Color32, a: f32) -> Color32 {
         c.b(),
         (a.clamp(0.0, 1.0) * 255.0) as u8,
     )
+}
+
+/// Bottom-left status overlay: map name, cursor position in map
+/// coords, current zoom factor. Painted on top of the canvas as a
+/// translucent pill so it doesn't compete with the scene.
+fn draw_status_bar(
+    ui: &Ui,
+    map: &Map,
+    hover: Option<Pos2>,
+    outer: Rect,
+    scene_rect: Rect,
+) {
+    if outer.width() <= 0.0 || outer.height() <= 0.0 {
+        return;
+    }
+    // Cursor in map coords (y-unflipped back to Doom convention).
+    let cursor_str = match hover {
+        Some(c) => {
+            if let Some((scene_pt, _r)) = cursor_and_radius_at(c, outer, scene_rect, 1.0) {
+                let map_x = scene_pt.x.round() as i32;
+                let map_y = -scene_pt.y.round() as i32;
+                format!("({}, {})", map_x, map_y)
+            } else {
+                "—".to_string()
+            }
+        }
+        None => "—".to_string(),
+    };
+    // Zoom: how many scene units per output pixel? Smaller = zoomed in.
+    let units_per_px = scene_rect.width() / outer.width().max(1.0);
+    let zoom = if units_per_px > 0.0 {
+        format!("{:.0}× ({:.2} u/px)", 1.0 / units_per_px, units_per_px)
+    } else {
+        "—".to_string()
+    };
+    let text = format!(
+        "{}  ·  cursor {}  ·  zoom {}",
+        map.name, cursor_str, zoom
+    );
+
+    let painter = ui.painter().with_clip_rect(outer);
+    let pad = egui::vec2(8.0, 4.0);
+    let font = egui::FontId::monospace(11.0);
+    let galley = painter.layout_no_wrap(
+        text,
+        font.clone(),
+        Color32::from_rgb(220, 220, 220),
+    );
+    let size = galley.size() + pad * 2.0;
+    let pos = egui::pos2(outer.left() + 8.0, outer.bottom() - size.y - 8.0);
+    let bg_rect = egui::Rect::from_min_size(pos, size);
+    painter.rect_filled(
+        bg_rect,
+        4.0,
+        Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+    );
+    painter.galley(pos + pad, galley, Color32::WHITE);
 }
 
 /// Map's bounding box in *scene coordinates* (y-flipped). Includes a
