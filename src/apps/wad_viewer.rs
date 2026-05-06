@@ -15,7 +15,35 @@ use egui::{Color32, Pos2, Rangef, Rect, Scene, Stroke, Ui};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::wad::{Linedef, Map, ThingCategory, Wad};
+use crate::wad::{Linedef, Map, Sector, ThingCategory, Wad};
+
+/// Which structural element the viewer is highlighting. Each mode
+/// keeps a faint backdrop of the geometry so the user always has
+/// spatial context, then emphasizes the chosen element on top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Default — full geometry + things, balanced.
+    Map,
+    /// Things prominent, geometry dimmed.
+    Things,
+    /// Linedefs prominent, color-coded by special vs. plain.
+    Linedefs,
+    /// Sector heatmap — linedef color comes from the sector's floor
+    /// height (cool = low, warm = high).
+    Sectors,
+    /// Raw vertex points only.
+    Vertices,
+}
+
+impl ViewMode {
+    const ALL: &'static [(ViewMode, &'static str)] = &[
+        (ViewMode::Map, "Map"),
+        (ViewMode::Things, "Things"),
+        (ViewMode::Linedefs, "Linedefs"),
+        (ViewMode::Sectors, "Sectors"),
+        (ViewMode::Vertices, "Vertices"),
+    ];
+}
 
 pub struct WadViewer {
     state: ViewerState,
@@ -25,10 +53,18 @@ pub struct WadViewer {
     scene_rect: Rect,
     /// Persisted across map switches so the user's view doesn't reset
     /// when they pick a new level.
-    show_things: bool,
     show_decorations: bool,
+    /// Active visualization mode — gates which elements are
+    /// foregrounded vs. dimmed in `draw_map`.
+    mode: ViewMode,
 }
 
+// `Loaded` carries the full parsed Map (vertexes/linedefs/sidedefs/
+// sectors/things — easily a few KB on a real level), while `Empty`
+// holds at most an error string. There's exactly one `ViewerState`
+// per `WadViewer` instance so the size disparity has no allocation
+// cost; we silence the lint rather than boxing.
+#[allow(clippy::large_enum_variant)]
 enum ViewerState {
     Empty {
         error: Option<String>,
@@ -47,8 +83,8 @@ impl Default for WadViewer {
         Self {
             state: ViewerState::Empty { error: None },
             scene_rect: Rect::ZERO,
-            show_things: true,
             show_decorations: false,
+            mode: ViewMode::Map,
         }
     }
 }
@@ -159,9 +195,17 @@ impl WadViewer {
             }
         });
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.show_things, "Things");
-            if self.show_things {
-                ui.checkbox(&mut self.show_decorations, "Show decorations");
+            ui.label(egui::RichText::new("View:").small().weak());
+            for (mode, label) in ViewMode::ALL {
+                ui.selectable_value(&mut self.mode, *mode, *label);
+            }
+            // Decoration toggle is only meaningful when things are
+            // foregrounded — it'd be confusing to expose in Sectors /
+            // Linedefs / Vertices modes where we don't draw things at
+            // full strength.
+            if matches!(self.mode, ViewMode::Map | ViewMode::Things) {
+                ui.separator();
+                ui.checkbox(&mut self.show_decorations, "Decorations");
             }
         });
         ui.separator();
@@ -189,8 +233,8 @@ impl WadViewer {
             }
             ViewerState::Loaded { map, .. } => {
                 let map = map.clone();
-                let show_things = self.show_things;
                 let show_decorations = self.show_decorations;
+                let mode = self.mode;
                 // Carve out the rect Scene will paint into so we can
                 // hit-test cursor-over-viewport for the plain-scroll
                 // zoom override below. We don't actually allocate the
@@ -200,7 +244,7 @@ impl WadViewer {
                 Scene::new()
                     .zoom_range(Rangef::new(0.005, 5.0))
                     .show(ui, &mut self.scene_rect, |scene_ui| {
-                        draw_map(scene_ui, &map, show_things, show_decorations);
+                        draw_map(scene_ui, &map, mode, show_decorations);
                     });
             }
         }
@@ -308,19 +352,60 @@ impl WadViewer {
 /// Render the map inside the Scene's transformed sub-ui. All coords
 /// are *map-space* — Scene applies the visible transform on its own
 /// layer. Doom's Y axis points up; egui's points down, so we flip Y.
-fn draw_map(ui: &mut Ui, map: &Map, show_things: bool, show_decorations: bool) {
-    // Force Scene's auto-fit to see the actual map extent. Without an
-    // allocate_rect call inside the closure, `ui.min_rect()` stays at
-    // its empty default and Scene's `Rect::ZERO` auto-fit path
-    // produces a degenerate transform, leaving the camera centered on
-    // (0, 0) with the geometry far off-screen. Painting alone doesn't
-    // grow the layout rect.
+fn draw_map(ui: &mut Ui, map: &Map, mode: ViewMode, show_decorations: bool) {
+    // Force Scene's auto-fit to see the actual map extent. See
+    // `scene_bbox` rationale below.
     let bbox = scene_bbox(map);
     let _ = ui.allocate_rect(bbox, egui::Sense::hover());
 
-    let painter = ui.painter();
+    let style = mode.geometry_style();
+    draw_linedefs(ui, map, mode, &style);
 
-    // Linedefs.
+    match mode {
+        ViewMode::Map | ViewMode::Things => {
+            draw_things(ui, map, show_decorations, 1.0);
+        }
+        ViewMode::Linedefs | ViewMode::Sectors => {
+            // Mode emphasis comes from the linedef pass above; no
+            // overlay needed.
+        }
+        ViewMode::Vertices => draw_vertices(ui, map),
+    }
+}
+
+/// Per-mode rendering knobs for the linedef pass — the only geometry
+/// layer that's always drawn. Modes that foreground something else
+/// (Things, Vertices) dim the geometry so the foreground reads.
+struct GeoStyle {
+    alpha: f32,
+    solid_w: f32,
+    portal_w: f32,
+}
+
+impl ViewMode {
+    fn geometry_style(self) -> GeoStyle {
+        match self {
+            ViewMode::Map | ViewMode::Linedefs | ViewMode::Sectors => GeoStyle {
+                alpha: 1.0,
+                solid_w: 1.4,
+                portal_w: 0.6,
+            },
+            ViewMode::Things => GeoStyle {
+                alpha: 0.45,
+                solid_w: 1.0,
+                portal_w: 0.4,
+            },
+            ViewMode::Vertices => GeoStyle {
+                alpha: 0.25,
+                solid_w: 0.7,
+                portal_w: 0.3,
+            },
+        }
+    }
+}
+
+fn draw_linedefs(ui: &Ui, map: &Map, mode: ViewMode, style: &GeoStyle) {
+    let painter = ui.painter();
     for ld in &map.linedefs {
         let (Some(va), Some(vb)) = (
             map.vertexes.get(ld.v1 as usize),
@@ -330,33 +415,54 @@ fn draw_map(ui: &mut Ui, map: &Map, show_things: bool, show_decorations: bool) {
         };
         let p1 = Pos2::new(va.x as f32, -va.y as f32);
         let p2 = Pos2::new(vb.x as f32, -vb.y as f32);
-        let stroke = linedef_stroke(ld);
+        let stroke = linedef_stroke(map, ld, mode, style);
         painter.line_segment([p1, p2], stroke);
     }
+}
 
-    // Things on top of geometry.
-    if show_things {
-        for t in &map.things {
-            let cat = ThingCategory::classify(t.doom_type);
-            if matches!(cat, ThingCategory::Decoration) && !show_decorations {
-                continue;
-            }
-            let p = Pos2::new(t.x as f32, -t.y as f32);
-            let (color, radius) = thing_visual(cat);
-            painter.circle_filled(p, radius, color);
-            // Small facing tick on player starts so orientation reads.
-            if matches!(cat, ThingCategory::PlayerStart) {
-                let ang = (t.angle as f32).to_radians();
-                let tip = Pos2::new(
-                    p.x + ang.cos() * radius * 2.5,
-                    // Doom angle is CCW in map space; map y is flipped
-                    // so the screen-space tick has its sin negated.
-                    p.y - ang.sin() * radius * 2.5,
-                );
-                painter.line_segment([p, tip], Stroke::new(1.0, color));
-            }
+fn draw_things(ui: &Ui, map: &Map, show_decorations: bool, alpha: f32) {
+    let painter = ui.painter();
+    for t in &map.things {
+        let cat = ThingCategory::classify(t.doom_type);
+        if matches!(cat, ThingCategory::Decoration) && !show_decorations {
+            continue;
+        }
+        let p = Pos2::new(t.x as f32, -t.y as f32);
+        let (color, radius) = thing_visual(cat);
+        painter.circle_filled(p, radius, with_alpha(color, alpha));
+        if matches!(cat, ThingCategory::PlayerStart) {
+            let ang = (t.angle as f32).to_radians();
+            let tip = Pos2::new(
+                p.x + ang.cos() * radius * 2.5,
+                p.y - ang.sin() * radius * 2.5,
+            );
+            painter.line_segment(
+                [p, tip],
+                Stroke::new(1.0, with_alpha(color, alpha)),
+            );
         }
     }
+}
+
+fn draw_vertices(ui: &Ui, map: &Map) {
+    let painter = ui.painter();
+    let color = Color32::from_rgb(255, 220, 130);
+    for v in &map.vertexes {
+        painter.circle_filled(
+            Pos2::new(v.x as f32, -v.y as f32),
+            1.6,
+            color,
+        );
+    }
+}
+
+fn with_alpha(c: Color32, a: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(
+        c.r(),
+        c.g(),
+        c.b(),
+        (a.clamp(0.0, 1.0) * 255.0) as u8,
+    )
 }
 
 /// Map's bounding box in *scene coordinates* (y-flipped). Includes a
@@ -375,14 +481,80 @@ fn scene_bbox(map: &Map) -> Rect {
     Rect::from_min_max(min, max)
 }
 
-fn linedef_stroke(ld: &Linedef) -> Stroke {
-    if ld.two_sided() {
-        // Step / portal between sectors — dim, thin.
-        Stroke::new(0.6, Color32::from_rgb(100, 95, 90))
-    } else {
-        // Solid wall.
-        Stroke::new(1.4, Color32::from_rgb(220, 215, 200))
+fn linedef_stroke(map: &Map, ld: &Linedef, mode: ViewMode, style: &GeoStyle) -> Stroke {
+    let two_sided = ld.two_sided();
+    let width = if two_sided { style.portal_w } else { style.solid_w };
+    let base = match mode {
+        ViewMode::Linedefs => {
+            // Triggers / switches color-coded so interactive lines pop.
+            if ld.special != 0 {
+                Color32::from_rgb(220, 180, 90)
+            } else if two_sided {
+                Color32::from_rgb(120, 115, 110)
+            } else {
+                Color32::from_rgb(230, 225, 215)
+            }
+        }
+        ViewMode::Sectors => sector_color(map, ld),
+        _ => {
+            if two_sided {
+                Color32::from_rgb(100, 95, 90)
+            } else {
+                Color32::from_rgb(220, 215, 200)
+            }
+        }
+    };
+    Stroke::new(width, with_alpha(base, style.alpha))
+}
+
+/// Pick the color for a linedef in Sectors mode by walking through
+/// its right-side sidedef to the sector. Falls back to dim gray if
+/// either ref is missing.
+fn sector_color(map: &Map, ld: &Linedef) -> Color32 {
+    let Some(sec_idx) = map.sector_of_right_side(ld) else {
+        return Color32::from_rgb(120, 120, 130);
+    };
+    let Some(sector) = map.sectors.get(sec_idx as usize) else {
+        return Color32::from_rgb(120, 120, 130);
+    };
+    floor_height_color(sector, &map.sectors)
+}
+
+/// Cool→warm 3-stop gradient over the level's observed floor-height
+/// range. Cheap heatmap that doesn't require building polygons.
+fn floor_height_color(sector: &Sector, all: &[Sector]) -> Color32 {
+    if all.is_empty() {
+        return Color32::from_rgb(180, 180, 180);
     }
+    let (mut lo, mut hi) = (i16::MAX, i16::MIN);
+    for s in all {
+        lo = lo.min(s.floor_height);
+        hi = hi.max(s.floor_height);
+    }
+    let range = (hi - lo).max(1) as f32;
+    let t = ((sector.floor_height - lo) as f32 / range).clamp(0.0, 1.0);
+    let (lo_c, mid_c, hi_c) = (
+        (60.0_f32, 110.0, 140.0),
+        (180.0_f32, 160.0, 110.0),
+        (220.0_f32, 110.0, 80.0),
+    );
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let (r, g, b) = if t < 0.5 {
+        let u = t * 2.0;
+        (
+            lerp(lo_c.0, mid_c.0, u),
+            lerp(lo_c.1, mid_c.1, u),
+            lerp(lo_c.2, mid_c.2, u),
+        )
+    } else {
+        let u = (t - 0.5) * 2.0;
+        (
+            lerp(mid_c.0, hi_c.0, u),
+            lerp(mid_c.1, hi_c.1, u),
+            lerp(mid_c.2, hi_c.2, u),
+        )
+    };
+    Color32::from_rgb(r as u8, g as u8, b as u8)
 }
 
 fn thing_visual(cat: ThingCategory) -> (Color32, f32) {

@@ -168,7 +168,9 @@ impl Wad {
 
     /// Fully parse a map by name. Looks up the header lump, then reads
     /// the named data lumps that should follow it within the next
-    /// dozen-or-so directory entries.
+    /// dozen-or-so directory entries. SECTORS and SIDEDEFS are parsed
+    /// when present (almost always) so the viewer can render
+    /// per-sector visualizations; their absence isn't fatal.
     pub fn load_map(&self, name: &str) -> Result<Map, WadError> {
         let header = self
             .find_lump(name)
@@ -187,12 +189,24 @@ impl Wad {
         let vertexes = parse_vertexes(self.lump_bytes(vertexes_idx)?)?;
         let linedefs = parse_linedefs(self.lump_bytes(linedefs_idx)?)?;
         let things = parse_things(self.lump_bytes(things_idx)?)?;
+
+        let sidedefs = match self.find_lump_after(header, "SIDEDEFS") {
+            Some(idx) => parse_sidedefs(self.lump_bytes(idx)?)?,
+            None => Vec::new(),
+        };
+        let sectors = match self.find_lump_after(header, "SECTORS") {
+            Some(idx) => parse_sectors(self.lump_bytes(idx)?)?,
+            None => Vec::new(),
+        };
+
         let bbox = Bbox::from_vertexes(&vertexes);
         Ok(Map {
             name: name.to_string(),
             vertexes,
             linedefs,
             things,
+            sidedefs,
+            sectors,
             bbox,
         })
     }
@@ -250,7 +264,24 @@ pub struct Map {
     pub vertexes: Vec<Vertex>,
     pub linedefs: Vec<Linedef>,
     pub things: Vec<Thing>,
+    /// One sidedef per linedef face (1-sided lines have one, 2-sided
+    /// have two). Each sidedef points at exactly one sector.
+    pub sidedefs: Vec<Sidedef>,
+    /// Sectors define floor/ceiling heights, light level, and
+    /// floor/ceiling textures for the regions between linedefs.
+    pub sectors: Vec<Sector>,
     pub bbox: Bbox,
+}
+
+impl Map {
+    /// Sector index referenced by the `right_sidedef` of `ld`, if any.
+    /// Most viewer code wants this for "which sector does this wall
+    /// belong to" — convenience that handles the SIDEDEFS indirection.
+    pub fn sector_of_right_side(&self, ld: &Linedef) -> Option<u16> {
+        self.sidedefs
+            .get(ld.right_sidedef as usize)
+            .map(|sd| sd.sector)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -290,6 +321,35 @@ pub struct Thing {
     pub flags: u16,
 }
 
+/// One face of a linedef. A 1-sided wall has only the `right_sidedef`
+/// of its linedef set; 2-sided portals (step changes between sectors)
+/// have both.
+#[derive(Debug, Clone)]
+pub struct Sidedef {
+    pub x_offset: i16,
+    pub y_offset: i16,
+    /// 8-char texture name; "-" means "no texture on this face".
+    pub upper_tex: String,
+    pub lower_tex: String,
+    pub middle_tex: String,
+    /// Index into `Map::sectors` — which sector this face belongs to.
+    pub sector: u16,
+}
+
+/// A region of the map with a floor + ceiling height, light level,
+/// and floor/ceiling texture references. Linedefs reference sectors
+/// indirectly via their sidedefs.
+#[derive(Debug, Clone)]
+pub struct Sector {
+    pub floor_height: i16,
+    pub ceiling_height: i16,
+    pub floor_tex: String,
+    pub ceiling_tex: String,
+    pub light: u16,
+    pub special: u16,
+    pub tag: u16,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Bbox {
     pub min_x: i32,
@@ -327,6 +387,19 @@ impl Bbox {
 const VERTEX_SIZE: usize = 4;
 const LINEDEF_SIZE: usize = 14;
 const THING_SIZE: usize = 10;
+const SIDEDEF_SIZE: usize = 30;
+const SECTOR_SIZE: usize = 26;
+
+/// Read an 8-byte texture/flat name, null- or space-padded. Returns
+/// the trimmed ASCII string with "-" preserved (Doom uses it as the
+/// "no texture" sentinel).
+fn read_tex_name(bytes: &[u8]) -> String {
+    let end = bytes
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).trim().to_string()
+}
 
 fn parse_vertexes(bytes: &[u8]) -> Result<Vec<Vertex>, WadError> {
     if !bytes.len().is_multiple_of(VERTEX_SIZE) {
@@ -391,6 +464,55 @@ fn parse_things(bytes: &[u8]) -> Result<Vec<Thing>, WadError> {
             angle: read_u16_le(bytes, base + 4),
             doom_type: read_u16_le(bytes, base + 6),
             flags: read_u16_le(bytes, base + 8),
+        });
+    }
+    Ok(out)
+}
+
+fn parse_sidedefs(bytes: &[u8]) -> Result<Vec<Sidedef>, WadError> {
+    if !bytes.len().is_multiple_of(SIDEDEF_SIZE) {
+        return Err(WadError::Format(format!(
+            "SIDEDEFS not multiple of {}: {} bytes",
+            SIDEDEF_SIZE,
+            bytes.len()
+        )));
+    }
+    let n = bytes.len() / SIDEDEF_SIZE;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let base = i * SIDEDEF_SIZE;
+        out.push(Sidedef {
+            x_offset: read_i16_le(bytes, base),
+            y_offset: read_i16_le(bytes, base + 2),
+            upper_tex: read_tex_name(&bytes[base + 4..base + 12]),
+            lower_tex: read_tex_name(&bytes[base + 12..base + 20]),
+            middle_tex: read_tex_name(&bytes[base + 20..base + 28]),
+            sector: read_u16_le(bytes, base + 28),
+        });
+    }
+    Ok(out)
+}
+
+fn parse_sectors(bytes: &[u8]) -> Result<Vec<Sector>, WadError> {
+    if !bytes.len().is_multiple_of(SECTOR_SIZE) {
+        return Err(WadError::Format(format!(
+            "SECTORS not multiple of {}: {} bytes",
+            SECTOR_SIZE,
+            bytes.len()
+        )));
+    }
+    let n = bytes.len() / SECTOR_SIZE;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let base = i * SECTOR_SIZE;
+        out.push(Sector {
+            floor_height: read_i16_le(bytes, base),
+            ceiling_height: read_i16_le(bytes, base + 2),
+            floor_tex: read_tex_name(&bytes[base + 4..base + 12]),
+            ceiling_tex: read_tex_name(&bytes[base + 12..base + 20]),
+            light: read_u16_le(bytes, base + 20),
+            special: read_u16_le(bytes, base + 22),
+            tag: read_u16_le(bytes, base + 24),
         });
     }
     Ok(out)
@@ -527,6 +649,44 @@ mod tests {
         assert_eq!(ThingCategory::classify(2001), ThingCategory::Weapon);
         assert_eq!(ThingCategory::classify(2011), ThingCategory::HealthArmor);
         assert_eq!(ThingCategory::classify(50000), ThingCategory::Other);
+    }
+
+    #[test]
+    fn parse_sidedefs_round_trip() {
+        let mut bytes = vec![0u8; SIDEDEF_SIZE];
+        bytes[0..2].copy_from_slice(&8i16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&(-4i16).to_le_bytes());
+        bytes[4..12].copy_from_slice(b"STARTAN3");
+        bytes[12..20].copy_from_slice(b"-       ");
+        bytes[20..28].copy_from_slice(b"DOORSTOP");
+        bytes[28..30].copy_from_slice(&7u16.to_le_bytes());
+        let sds = parse_sidedefs(&bytes).unwrap();
+        assert_eq!(sds.len(), 1);
+        assert_eq!(sds[0].x_offset, 8);
+        assert_eq!(sds[0].y_offset, -4);
+        assert_eq!(sds[0].upper_tex, "STARTAN3");
+        assert_eq!(sds[0].lower_tex, "-");
+        assert_eq!(sds[0].middle_tex, "DOORSTOP");
+        assert_eq!(sds[0].sector, 7);
+    }
+
+    #[test]
+    fn parse_sectors_round_trip() {
+        let mut bytes = vec![0u8; SECTOR_SIZE];
+        bytes[0..2].copy_from_slice(&0i16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&128i16.to_le_bytes());
+        bytes[4..12].copy_from_slice(b"FLOOR4_8");
+        bytes[12..20].copy_from_slice(b"CEIL3_5\0");
+        bytes[20..22].copy_from_slice(&160u16.to_le_bytes());
+        bytes[22..24].copy_from_slice(&0u16.to_le_bytes());
+        bytes[24..26].copy_from_slice(&0u16.to_le_bytes());
+        let s = parse_sectors(&bytes).unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].floor_height, 0);
+        assert_eq!(s[0].ceiling_height, 128);
+        assert_eq!(s[0].floor_tex, "FLOOR4_8");
+        assert_eq!(s[0].ceiling_tex, "CEIL3_5");
+        assert_eq!(s[0].light, 160);
     }
 
     #[test]
