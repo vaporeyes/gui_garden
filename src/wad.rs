@@ -518,6 +518,285 @@ fn parse_sectors(bytes: &[u8]) -> Result<Vec<Sector>, WadError> {
     Ok(out)
 }
 
+/// Human-readable name for a Doom thing type. Returns `None` for
+/// numbers not in our small table — the viewer falls back to "Type #"
+/// in that case rather than fudging a guess. Coverage focuses on
+/// shareware Doom 1 contents (E1) since that's what most users will
+/// load; full Doom 2 / Plutonia / TNT bestiary is intentionally out
+/// of scope here.
+pub fn thing_type_name(doom_type: u16) -> Option<&'static str> {
+    Some(match doom_type {
+        // Player starts.
+        1 => "Player 1 start",
+        2 => "Player 2 start",
+        3 => "Player 3 start",
+        4 => "Player 4 start",
+        11 => "Deathmatch start",
+        14 => "Teleport landing",
+        // Monsters (Doom 1 set).
+        9 => "Shotgun guy",
+        58 => "Spectre",
+        3001 => "Imp",
+        3002 => "Demon (pinky)",
+        3003 => "Baron of Hell",
+        3004 => "Zombieman",
+        3005 => "Cacodemon",
+        3006 => "Lost soul",
+        // Weapons.
+        2001 => "Shotgun",
+        2002 => "Chaingun",
+        2003 => "Rocket launcher",
+        2004 => "Plasma rifle",
+        2005 => "Chainsaw",
+        2006 => "BFG 9000",
+        // Ammo.
+        2007 => "Clip (10 bullets)",
+        2008 => "Shotgun shells (4)",
+        2010 => "Rocket",
+        2046 => "Box of rockets (5)",
+        2047 => "Cell (20)",
+        2048 => "Box of bullets (50)",
+        2049 => "Box of shells (20)",
+        // Health & armor.
+        2011 => "Stimpack (+10 hp)",
+        2012 => "Medikit (+25 hp)",
+        2013 => "Soulsphere (+100)",
+        2014 => "Health bonus (+1)",
+        2015 => "Armor bonus (+1)",
+        2018 => "Green armor (100)",
+        2019 => "Blue armor (200)",
+        2022 => "Invulnerability",
+        2023 => "Berserk",
+        2024 => "Invisibility",
+        2025 => "Radiation suit",
+        2026 => "Computer area map",
+        2045 => "Light goggles",
+        // Keys.
+        5 => "Blue keycard",
+        6 => "Yellow keycard",
+        13 => "Red keycard",
+        38 => "Red skull key",
+        39 => "Yellow skull key",
+        40 => "Blue skull key",
+        // Common decorations.
+        15 => "Dead player",
+        18 => "Dead zombieman",
+        19 => "Dead shotgun guy",
+        20 => "Dead imp",
+        21 => "Dead demon",
+        22 => "Dead cacodemon",
+        25 => "Impaled human",
+        26 => "Twitching impaled human",
+        27 => "Skull on stake",
+        28 => "5 skulls on stake",
+        29 => "Pile of skulls and candles",
+        30 => "Tall green pillar",
+        31 => "Short green pillar",
+        32 => "Tall red pillar",
+        33 => "Short red pillar",
+        34 => "Candle",
+        35 => "Candelabra",
+        36 => "Tall short pillar with heart",
+        37 => "Tall short pillar with skull",
+        41 => "Evil eye",
+        42 => "Floating skull",
+        43 => "Burning tree",
+        44 => "Tall blue torch",
+        45 => "Tall green torch",
+        46 => "Tall red torch",
+        47 => "Stalagmite",
+        48 => "Tall techno column",
+        49 => "Hanging victim, twitching",
+        50 => "Hanging victim, arms out",
+        51 => "Hanging victim, one-legged",
+        52 => "Hanging pair of legs",
+        53 => "Hanging leg",
+        54 => "Large brown tree",
+        55 => "Short blue torch",
+        56 => "Short green torch",
+        57 => "Short red torch",
+        59 => "Hanging victim, twitching (block)",
+        60 => "Hanging victim, arms out (block)",
+        61 => "Hanging pair of legs (block)",
+        62 => "Hanging leg (block)",
+        63 => "Hanging victim, one-legged (block)",
+        70 => "Burning barrel",
+        2028 => "Floor lamp",
+        2035 => "Exploding barrel",
+        _ => return None,
+    })
+}
+
+/// Common Doom linedef specials. Covers doors, switches, exits, lifts,
+/// stairs — the high-traffic types most relevant when inspecting a
+/// map. Long-tail specials return `None` and the viewer falls back to
+/// "Special N".
+pub fn linedef_special_name(special: u16) -> Option<&'static str> {
+    Some(match special {
+        0 => "(none)",
+        // Doors.
+        1 => "DR Door (open, close after delay)",
+        2 => "W1 Door (open, stay)",
+        3 => "W1 Door (close)",
+        4 => "W1 Door (open, close after delay)",
+        16 => "W1 Door (close, open after 30s)",
+        26 => "DR Blue Door (locked)",
+        27 => "DR Yellow Door (locked)",
+        28 => "DR Red Door (locked)",
+        29 => "S1 Door (open, close)",
+        31 => "D1 Door (open, stay)",
+        32 => "D1 Blue Door (locked)",
+        33 => "D1 Red Door (locked)",
+        34 => "D1 Yellow Door (locked)",
+        46 => "GR Door (open, stay)",
+        61 => "SR Door (open, stay)",
+        63 => "SR Door (open, close)",
+        90 => "WR Door (open, close)",
+        99 => "SR Blue Door (locked)",
+        103 => "S1 Door (open, stay)",
+        108 => "W1 Door fast (open, close)",
+        109 => "W1 Door fast (open, stay)",
+        110 => "W1 Door fast (close)",
+        111 => "S1 Door fast (open, close)",
+        112 => "S1 Door fast (open, stay)",
+        113 => "S1 Door fast (close)",
+        114 => "SR Door fast (open, close)",
+        115 => "SR Door fast (open, stay)",
+        116 => "SR Door fast (close)",
+        117 => "DR Door fast (open, close)",
+        118 => "D1 Door fast (open, stay)",
+        // Exits.
+        11 => "S1 Exit level",
+        51 => "S1 Exit level (secret)",
+        52 => "W1 Exit level",
+        124 => "W1 Exit level (secret)",
+        // Lifts (platforms).
+        10 => "W1 Lift (down, wait, up)",
+        21 => "S1 Lift (down, wait, up)",
+        62 => "SR Lift (down, wait, up)",
+        88 => "WR Lift (down, wait, up)",
+        121 => "W1 Lift fast",
+        122 => "S1 Lift fast",
+        123 => "SR Lift fast",
+        // Floors.
+        5 => "W1 Floor up to lowest ceiling",
+        14 => "S1 Floor up 32",
+        18 => "S1 Floor up to next higher",
+        19 => "W1 Floor down to highest",
+        20 => "S1 Floor up to next higher (change tex)",
+        23 => "S1 Floor down to lowest",
+        30 => "W1 Floor up by shortest lower texture",
+        36 => "W1 Floor down to 8 above highest",
+        38 => "W1 Floor down to lowest",
+        58 => "W1 Floor up 24",
+        59 => "W1 Floor up 24 (change tex)",
+        // Stairs.
+        7 => "S1 Stairs (slow, +8)",
+        8 => "W1 Stairs (slow, +8)",
+        100 => "W1 Stairs (fast, +16)",
+        127 => "S1 Stairs (fast, +16)",
+        // Teleporters.
+        39 => "W1 Teleport",
+        97 => "WR Teleport",
+        125 => "W1 Teleport (monsters only)",
+        126 => "WR Teleport (monsters only)",
+        // Lighting.
+        12 => "W1 Light to highest neighbour",
+        13 => "W1 Light to 255",
+        17 => "W1 Light strobe",
+        35 => "W1 Light to 35",
+        79 => "WR Light to 35",
+        80 => "WR Light to highest neighbour",
+        81 => "WR Light to 255",
+        104 => "W1 Light to lowest neighbour",
+        // Crushers.
+        6 => "W1 Crusher fast",
+        25 => "W1 Crusher",
+        49 => "S1 Crusher",
+        73 => "WR Crusher",
+        77 => "WR Crusher fast",
+        _ => return None,
+    })
+}
+
+/// Decode the standard Doom linedef flag bits.
+pub fn linedef_flag_descriptions(flags: u16) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if flags & 0x0001 != 0 {
+        out.push("Impassable");
+    }
+    if flags & 0x0002 != 0 {
+        out.push("Block monsters");
+    }
+    if flags & 0x0004 != 0 {
+        out.push("Two-sided");
+    }
+    if flags & 0x0008 != 0 {
+        out.push("Upper unpegged");
+    }
+    if flags & 0x0010 != 0 {
+        out.push("Lower unpegged");
+    }
+    if flags & 0x0020 != 0 {
+        out.push("Secret (drawn 1-sided on map)");
+    }
+    if flags & 0x0040 != 0 {
+        out.push("Block sound");
+    }
+    if flags & 0x0080 != 0 {
+        out.push("Hidden on map");
+    }
+    if flags & 0x0100 != 0 {
+        out.push("Always shown on map");
+    }
+    out
+}
+
+/// Common Doom sector specials.
+pub fn sector_special_name(special: u16) -> Option<&'static str> {
+    Some(match special {
+        0 => "Normal",
+        1 => "Random light flicker",
+        2 => "Strobe fast",
+        3 => "Strobe slow",
+        4 => "Strobe + 20% damage",
+        5 => "10% damage / sec",
+        7 => "5% damage / sec",
+        8 => "Glow / oscillate",
+        9 => "Secret",
+        10 => "Door close after 30 sec",
+        11 => "20% damage + end level",
+        12 => "Sync strobe slow",
+        13 => "Sync strobe fast",
+        14 => "Door open after 300 sec",
+        16 => "20% damage / sec",
+        17 => "Random light flicker",
+        _ => return None,
+    })
+}
+
+/// Decode the standard Doom thing flag bits into human-readable
+/// strings, in order. Empty vec for `flags == 0`.
+pub fn thing_flag_descriptions(flags: u16) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if flags & 0x0001 != 0 {
+        out.push("Skill 1-2 (easy)");
+    }
+    if flags & 0x0002 != 0 {
+        out.push("Skill 3 (medium)");
+    }
+    if flags & 0x0004 != 0 {
+        out.push("Skill 4-5 (hard)");
+    }
+    if flags & 0x0008 != 0 {
+        out.push("Deaf / ambush");
+    }
+    if flags & 0x0010 != 0 {
+        out.push("Multiplayer only");
+    }
+    out
+}
+
 /// Coarse bucket for a Doom thing type — used by the 2D viewer to
 /// decide what color dot to draw. Numbers come from the standard Doom
 /// editor reference; we only encode the buckets, not specific items.
@@ -640,6 +919,50 @@ mod tests {
             ..solid
         };
         assert!(portal.two_sided());
+    }
+
+    #[test]
+    fn thing_type_name_known_and_unknown() {
+        assert_eq!(thing_type_name(1), Some("Player 1 start"));
+        assert_eq!(thing_type_name(3001), Some("Imp"));
+        assert_eq!(thing_type_name(2003), Some("Rocket launcher"));
+        assert_eq!(thing_type_name(50000), None);
+    }
+
+    #[test]
+    fn linedef_special_name_known_and_unknown() {
+        assert_eq!(linedef_special_name(0), Some("(none)"));
+        assert_eq!(linedef_special_name(1), Some("DR Door (open, close after delay)"));
+        assert_eq!(linedef_special_name(11), Some("S1 Exit level"));
+        assert!(linedef_special_name(50000).is_none());
+    }
+
+    #[test]
+    fn linedef_flag_descriptions_decodes_bits() {
+        assert!(linedef_flag_descriptions(0).is_empty());
+        let combo = linedef_flag_descriptions(0x0001 | 0x0004 | 0x0020);
+        assert_eq!(
+            combo,
+            vec![
+                "Impassable",
+                "Two-sided",
+                "Secret (drawn 1-sided on map)",
+            ]
+        );
+    }
+
+    #[test]
+    fn sector_special_name_known_and_unknown() {
+        assert_eq!(sector_special_name(0), Some("Normal"));
+        assert_eq!(sector_special_name(9), Some("Secret"));
+        assert!(sector_special_name(50000).is_none());
+    }
+
+    #[test]
+    fn thing_flag_descriptions_decodes_bits() {
+        assert!(thing_flag_descriptions(0).is_empty());
+        let easy_deaf = thing_flag_descriptions(0x0001 | 0x0008);
+        assert_eq!(easy_deaf, vec!["Skill 1-2 (easy)", "Deaf / ambush"]);
     }
 
     #[test]
