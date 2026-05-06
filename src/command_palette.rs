@@ -22,6 +22,8 @@ pub enum WindowKind {
     BinaryClock,
     Bezier,
     PaletteStudio,
+    Raycaster,
+    WadViewer,
     AppEvents,
 }
 
@@ -39,6 +41,8 @@ impl WindowKind {
             Self::BinaryClock => "Binary Clock",
             Self::Bezier => "Bezier Playground",
             Self::PaletteStudio => "Palette Studio",
+            Self::Raycaster => "Raycaster",
+            Self::WadViewer => "WAD Viewer",
             Self::AppEvents => "App Events",
         }
     }
@@ -52,7 +56,9 @@ impl WindowKind {
             | Self::Workouts
             | Self::Collections
             | Self::Bezier
-            | Self::PaletteStudio => "tools",
+            | Self::PaletteStudio
+            | Self::Raycaster
+            | Self::WadViewer => "tools",
             Self::DigitalGarden => "notes",
             Self::AppEvents => "system",
         }

@@ -6,6 +6,7 @@ mod apps;
 mod command_palette;
 mod digital_garden;
 mod palette;
+mod wad;
 pub use app::TemplateApp;
 
 pub trait View {

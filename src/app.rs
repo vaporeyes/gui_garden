@@ -25,6 +25,8 @@ pub struct TemplateApp {
     collections_is_open: bool,
     bezier_is_open: bool,
     palette_studio_is_open: bool,
+    raycaster_is_open: bool,
+    wad_viewer_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
     #[serde(skip)]
@@ -45,6 +47,12 @@ pub struct TemplateApp {
     bezier: crate::apps::BezierPlayground,
     #[serde(skip)]
     palette_studio: crate::apps::PaletteStudio,
+    #[serde(skip)]
+    raycaster: crate::apps::Raycaster,
+    #[serde(skip)]
+    wad_viewer: crate::apps::WadViewer,
+    /// Persisted path to the most-recently-used Doom WAD file.
+    wad_path: String,
     /// DigitalGarden's runtime state is all `#[serde(skip)]` internally; the
     /// only field that persists is user preferences like the hot-reload
     /// debounce window, which survive restarts.
@@ -99,6 +107,8 @@ impl Default for TemplateApp {
             collections_is_open: false,
             bezier_is_open: false,
             palette_studio_is_open: false,
+            raycaster_is_open: false,
+            wad_viewer_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
             binary_clock: Default::default(),
@@ -109,6 +119,9 @@ impl Default for TemplateApp {
             collections: Default::default(),
             bezier: Default::default(),
             palette_studio: Default::default(),
+            raycaster: Default::default(),
+            wad_viewer: Default::default(),
+            wad_path: String::new(),
             digital_garden: DigitalGarden::default(),
             notes_directory_path: String::new(),
             workouts_path: String::new(),
@@ -180,6 +193,10 @@ impl TemplateApp {
         if !cp.is_empty() {
             app.canvas_view.load_from_path(expand_path(cp));
         }
+        let wadp = app.wad_path.trim();
+        if !wadp.is_empty() {
+            app.wad_viewer.load_from_path(expand_path(wadp));
+        }
 
         // Honour an incoming URL fragment on wasm — `page.html#my-note`
         // opens that note after the directory has loaded.
@@ -208,6 +225,8 @@ impl TemplateApp {
             WindowKind::Collections,
             WindowKind::Bezier,
             WindowKind::PaletteStudio,
+            WindowKind::Raycaster,
+            WindowKind::WadViewer,
             WindowKind::AppEvents,
         ] {
             items.push(PaletteItem::Window(w));
@@ -318,6 +337,8 @@ impl TemplateApp {
             WindowKind::BinaryClock => &mut self.binary_clock_is_open,
             WindowKind::Bezier => &mut self.bezier_is_open,
             WindowKind::PaletteStudio => &mut self.palette_studio_is_open,
+            WindowKind::Raycaster => &mut self.raycaster_is_open,
+            WindowKind::WadViewer => &mut self.wad_viewer_is_open,
             WindowKind::AppEvents => &mut self.events_is_open,
         }
     }
@@ -461,6 +482,8 @@ impl eframe::App for TemplateApp {
                     self.sidebar_toggle(ui, WindowKind::Collections, "Collections");
                     self.sidebar_toggle(ui, WindowKind::Bezier, "Bezier");
                     self.sidebar_toggle(ui, WindowKind::PaletteStudio, "Palette Studio");
+                    self.sidebar_toggle(ui, WindowKind::Raycaster, "Raycaster");
+                    self.sidebar_toggle(ui, WindowKind::WadViewer, "WAD Viewer");
 
                     sidebar_section(ui, "notes", accent);
                     self.sidebar_toggle(ui, WindowKind::DigitalGarden, "Digital Garden");
@@ -583,6 +606,30 @@ impl eframe::App for TemplateApp {
             .default_width(640.0)
             .default_height(520.0)
             .show(&ctx, |ui| self.palette_studio.ui(ui));
+
+        egui::Window::new("Raycaster")
+            .open(&mut self.raycaster_is_open)
+            .default_width(720.0)
+            .default_height(520.0)
+            .min_width(360.0)
+            .min_height(280.0)
+            .show(&ctx, |ui| self.raycaster.ui(ui));
+
+        egui::Window::new("WAD Viewer")
+            .open(&mut self.wad_viewer_is_open)
+            .default_width(900.0)
+            .default_height(640.0)
+            .min_width(500.0)
+            .min_height(360.0)
+            .show(&ctx, |ui| self.wad_viewer.ui(ui));
+        // Mirror the loaded WAD path into the persisted field so the
+        // next launch auto-rehydrates the same file.
+        if let Some(p) = self.wad_viewer.loaded_path() {
+            let s = p.to_string_lossy().to_string();
+            if s != self.wad_path {
+                self.wad_path = s;
+            }
+        }
         if let Some(p) = self.workouts.loaded_path() {
             let s = p.to_string_lossy().to_string();
             if s != self.workouts_path {

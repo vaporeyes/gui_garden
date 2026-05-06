@@ -9,11 +9,11 @@ fn main() {
 
     let native_options = eframe::NativeOptions::default();
     if let Err(err) = eframe::run_native(
-        "digital garden",
+        "Gui Garden",
         native_options,
         Box::new(|cc| Ok(Box::new(digital_garden::TemplateApp::new(cc)))),
     ) {
-        eprintln!("digital garden exited with error: {err}");
+        eprintln!("Gui Garden exited with error: {err}");
     }
 }
 

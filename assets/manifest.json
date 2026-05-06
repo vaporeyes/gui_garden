@@ -1,6 +1,6 @@
 {
-  "name": "egui Template PWA",
-  "short_name": "egui-template-pwa",
+  "name": "Gui Garden",
+  "short_name": "Gui Garden",
   "icons": [
     {
       "src": "./icon-256.png",
