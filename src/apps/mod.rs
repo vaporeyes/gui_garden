@@ -8,6 +8,7 @@ mod easy_mark;
 mod palette_studio;
 mod projects;
 mod raycaster;
+mod timestamp_converter;
 mod wad_viewer;
 mod workouts;
 
@@ -22,5 +23,6 @@ pub use fractal_clock::clock_button;
 pub use palette_studio::PaletteStudio;
 pub use projects::Projects;
 pub use raycaster::Raycaster;
+pub use timestamp_converter::TimestampConverter;
 pub use wad_viewer::WadViewer;
 pub use workouts::Workouts;

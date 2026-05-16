@@ -23,6 +23,7 @@ pub enum WindowKind {
     Bezier,
     PaletteStudio,
     Raycaster,
+    TimestampConverter,
     WadViewer,
     AppEvents,
 }
@@ -42,6 +43,7 @@ impl WindowKind {
             Self::Bezier => "Bezier Playground",
             Self::PaletteStudio => "Palette Studio",
             Self::Raycaster => "Raycaster",
+            Self::TimestampConverter => "Timestamp Converter",
             Self::WadViewer => "WAD Viewer",
             Self::AppEvents => "App Events",
         }
@@ -58,6 +60,7 @@ impl WindowKind {
             | Self::Bezier
             | Self::PaletteStudio
             | Self::Raycaster
+            | Self::TimestampConverter
             | Self::WadViewer => "tools",
             Self::DigitalGarden => "notes",
             Self::AppEvents => "system",

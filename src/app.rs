@@ -26,6 +26,7 @@ pub struct TemplateApp {
     bezier_is_open: bool,
     palette_studio_is_open: bool,
     raycaster_is_open: bool,
+    timestamp_converter_is_open: bool,
     wad_viewer_is_open: bool,
     #[serde(skip)]
     calculator: crate::apps::Calculator,
@@ -49,6 +50,8 @@ pub struct TemplateApp {
     palette_studio: crate::apps::PaletteStudio,
     #[serde(skip)]
     raycaster: crate::apps::Raycaster,
+    #[serde(skip)]
+    timestamp_converter: crate::apps::TimestampConverter,
     #[serde(skip)]
     wad_viewer: crate::apps::WadViewer,
     /// Persisted path to the most-recently-used Doom WAD file.
@@ -108,6 +111,7 @@ impl Default for TemplateApp {
             bezier_is_open: false,
             palette_studio_is_open: false,
             raycaster_is_open: false,
+            timestamp_converter_is_open: false,
             wad_viewer_is_open: false,
             calculator: Default::default(),
             fractal_clock: Default::default(),
@@ -120,6 +124,7 @@ impl Default for TemplateApp {
             bezier: Default::default(),
             palette_studio: Default::default(),
             raycaster: Default::default(),
+            timestamp_converter: Default::default(),
             wad_viewer: Default::default(),
             wad_path: String::new(),
             digital_garden: DigitalGarden::default(),
@@ -226,6 +231,7 @@ impl TemplateApp {
             WindowKind::Bezier,
             WindowKind::PaletteStudio,
             WindowKind::Raycaster,
+            WindowKind::TimestampConverter,
             WindowKind::WadViewer,
             WindowKind::AppEvents,
         ] {
@@ -338,6 +344,7 @@ impl TemplateApp {
             WindowKind::Bezier => &mut self.bezier_is_open,
             WindowKind::PaletteStudio => &mut self.palette_studio_is_open,
             WindowKind::Raycaster => &mut self.raycaster_is_open,
+            WindowKind::TimestampConverter => &mut self.timestamp_converter_is_open,
             WindowKind::WadViewer => &mut self.wad_viewer_is_open,
             WindowKind::AppEvents => &mut self.events_is_open,
         }
@@ -483,6 +490,7 @@ impl eframe::App for TemplateApp {
                     self.sidebar_toggle(ui, WindowKind::Bezier, "Bezier");
                     self.sidebar_toggle(ui, WindowKind::PaletteStudio, "Palette Studio");
                     self.sidebar_toggle(ui, WindowKind::Raycaster, "Raycaster");
+                    self.sidebar_toggle(ui, WindowKind::TimestampConverter, "Timestamp Converter");
                     self.sidebar_toggle(ui, WindowKind::WadViewer, "WAD Viewer");
 
                     sidebar_section(ui, "notes", accent);
@@ -614,6 +622,13 @@ impl eframe::App for TemplateApp {
             .min_width(360.0)
             .min_height(280.0)
             .show(&ctx, |ui| self.raycaster.ui(ui));
+
+        egui::Window::new("Timestamp Converter")
+            .open(&mut self.timestamp_converter_is_open)
+            .default_width(560.0)
+            .default_height(360.0)
+            .min_width(420.0)
+            .show(&ctx, |ui| self.timestamp_converter.ui(ui));
 
         egui::Window::new("WAD Viewer")
             .open(&mut self.wad_viewer_is_open)
